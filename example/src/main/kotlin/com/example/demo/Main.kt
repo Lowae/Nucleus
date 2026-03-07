@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogState
+import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
@@ -53,21 +54,13 @@ import com.example.demo.icons.MaterialIconsDark_mode
 import com.example.demo.icons.MaterialIconsInfo
 import com.example.demo.icons.MaterialIconsLight_mode
 import com.example.demo.icons.VscodeCodiconsColorMode
-import io.github.kdroidfilter.nucleus.aot.runtime.AotRuntime
+//import io.github.kdroidfilter.nucleus.aot.runtime.AotRuntime
 import io.github.kdroidfilter.nucleus.core.runtime.DeepLinkHandler
 import io.github.kdroidfilter.nucleus.core.runtime.Platform
 import io.github.kdroidfilter.nucleus.core.runtime.SingleInstanceManager
-import io.github.kdroidfilter.nucleus.darkmodedetector.isSystemInDarkMode
-import io.github.kdroidfilter.nucleus.graalvm.GraalVmInitializer
 import io.github.kdroidfilter.nucleus.updater.NucleusUpdater
 import io.github.kdroidfilter.nucleus.updater.UpdateResult
 import io.github.kdroidfilter.nucleus.updater.provider.GitHubProvider
-import io.github.kdroidfilter.nucleus.window.TitleBarScope
-import io.github.kdroidfilter.nucleus.window.material.MaterialDecoratedDialog
-import io.github.kdroidfilter.nucleus.window.material.MaterialDecoratedWindow
-import io.github.kdroidfilter.nucleus.window.material.MaterialDialogTitleBar
-import io.github.kdroidfilter.nucleus.window.material.MaterialTitleBar
-import io.github.kdroidfilter.nucleus.window.newFullscreenControls
 import java.io.File
 import java.net.URI
 import kotlin.system.exitProcess
@@ -78,146 +71,36 @@ private val deepLinkUri = mutableStateOf<URI?>(null)
 
 @Suppress("LongMethod")
 fun main(args: Array<String>) {
-    GraalVmInitializer.initialize()
-
     DeepLinkHandler.register(args) { uri ->
         deepLinkUri.value = uri
     }
 
     // Stop app after 15 seconds during AOT training mode
     // Use -Dnucleus.aot.mode=training to test
-    if (AotRuntime.isTraining()) {
-        println("[AOT] Training mode - will exit in 15 seconds")
-
-        Thread({
-            Thread.sleep(AOT_TRAINING_DURATION_MS)
-            println("[AOT] Time's up, exiting...")
-            exitProcess(0)
-        }, "aot-timer").apply {
-            isDaemon = false
-            start()
-        }
-    }
+//    if (AotRuntime.isTraining()) {
+//        println("[AOT] Training mode - will exit in 15 seconds")
+//
+//        Thread({
+//            Thread.sleep(AOT_TRAINING_DURATION_MS)
+//            println("[AOT] Time's up, exiting...")
+//            exitProcess(0)
+//        }, "aot-timer").apply {
+//            isDaemon = false
+//            start()
+//        }
+//    }
 
     application {
-        var isWindowVisible by remember { mutableStateOf(true) }
-        var restoreRequestCount by remember { mutableStateOf(0) }
-        var themeMode by remember { mutableStateOf(ThemeMode.System) }
-        var showInfoDialog by remember { mutableStateOf(false) }
-
-        val isFirstInstance =
-            remember {
-                SingleInstanceManager.isSingleInstance(
-                    onRestoreFileCreated = { DeepLinkHandler.writeUriTo(this) },
-                    onRestoreRequest = {
-                        DeepLinkHandler.readUriFrom(this)
-                        isWindowVisible = true
-                        restoreRequestCount++
-                    },
-                )
-            }
-
-        if (!isFirstInstance) {
-            exitApplication()
-            return@application
-        }
-
-        if (isWindowVisible) {
-            val isDark =
-                when (themeMode) {
-                    ThemeMode.System -> isSystemInDarkMode()
-                    ThemeMode.Dark -> true
-                    ThemeMode.Light -> false
-                }
-            val colorScheme = if (isDark) darkColorScheme() else lightColorScheme()
-
-            MaterialTheme(colorScheme = colorScheme) {
-                MaterialDecoratedWindow(
-                    state =
-                        rememberWindowState(
-                            position = WindowPosition.Aligned(Alignment.Center),
-                            placement = WindowPlacement.Maximized,
-                        ),
-                    onCloseRequest = ::exitApplication,
-                    title = "Nucleus Demo",
-                ) {
-                    val tabs = remember { mutableStateListOf("Main.kt", "Build.gradle", "README.md", "Settings") }
-                    var selectedTab by remember { mutableStateOf(0) }
-
-                    MaterialTitleBar(modifier = Modifier.newFullscreenControls()) { _ ->
-                        val titleBarAlignment =
-                            if (Platform.Current == Platform.MacOS) Alignment.End else Alignment.Start
-
-                        TitleBarIconButton(
-                            imageVector =
-                                when (themeMode) {
-                                    ThemeMode.System -> VscodeCodiconsColorMode
-                                    ThemeMode.Dark -> MaterialIconsDark_mode
-                                    ThemeMode.Light -> MaterialIconsLight_mode
-                                },
-                            contentDescription = "Toggle theme",
-                            modifier = Modifier.align(titleBarAlignment),
-                            onClick = { themeMode = themeMode.next() },
-                        )
-                        TitleBarIconButton(
-                            imageVector = MaterialIconsInfo,
-                            contentDescription = "System info",
-                            modifier = Modifier.align(titleBarAlignment),
-                            onClick = { showInfoDialog = true },
-                        )
-                        DraggableTabs(
-                            tabs = tabs,
-                            selectedIndex = selectedTab,
-                            onSelect = { selectedTab = it },
-                            onReorder = { from, to ->
-                                tabs.add(to, tabs.removeAt(from))
-                                selectedTab = to
-                            },
-                            modifier = Modifier.align(Alignment.CenterHorizontally),
-                        )
-                    }
-                    LaunchedEffect(restoreRequestCount) {
-                        if (restoreRequestCount > 0) {
-                            window.toFront()
-                            window.requestFocus()
-                        }
-                    }
-                    app()
-
-                    if (showInfoDialog) {
-                        MaterialDecoratedDialog(
-                            onCloseRequest = { showInfoDialog = false },
-                            state = DialogState(size = DpSize(400.dp, 250.dp)),
-                            title = "System Info",
-                        ) {
-                            val background = MaterialTheme.colorScheme.surface
-                            LaunchedEffect(window, background) {
-                                window.background = java.awt.Color(background.toArgb())
-                            }
-                            MaterialDialogTitleBar { _ ->
-                                Text(
-                                    title,
-                                    modifier = Modifier.align(Alignment.CenterHorizontally),
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                )
-                            }
-                            Surface(modifier = Modifier.fillMaxSize()) {
-                                Column(
-                                    modifier = Modifier.fillMaxSize().padding(24.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.Center,
-                                ) {
-                                    Text("OS: ${System.getProperty("os.name")} ${System.getProperty("os.arch")}")
-                                    Text(
-                                        "Java: ${System.getProperty("java.version")}" +
-                                            " (${System.getProperty("java.vendor")})",
-                                    )
-                                    Text("Runtime: ${System.getProperty("java.runtime.name", "Unknown")}")
-                                }
-                            }
-                        }
-                    }
-                }
+        val windowState = rememberWindowState()
+        Window(
+            state = windowState,
+            onCloseRequest = {
+                windowState.isMinimized = true
+            },
+            title = "Nucleus",
+        ) {
+            MaterialTheme() {
+                app()
             }
         }
     }
@@ -331,46 +214,46 @@ private enum class ThemeMode {
         }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Suppress("FunctionNaming", "DEPRECATION")
-@Composable
-private fun TitleBarScope.TitleBarIconButton(
-    imageVector: ImageVector,
-    contentDescription: String,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val hoverInteraction = remember { MutableInteractionSource() }
-    val isHovered by hoverInteraction.collectIsHoveredAsState()
-
-    Box(modifier = modifier) {
-        TooltipBox(
-            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(),
-            tooltip = { PlainTooltip { Text(contentDescription) } },
-            state = rememberTooltipState(),
-        ) {
-            Icon(
-                imageVector = imageVector,
-                contentDescription = contentDescription,
-                tint = MaterialTheme.colorScheme.onSurface,
-                modifier =
-                    Modifier
-                        .padding(horizontal = 4.dp)
-                        .clip(CircleShape)
-                        .hoverable(hoverInteraction)
-                        .background(
-                            if (isHovered) {
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
-                            } else {
-                                Color.Transparent
-                            },
-                        ).clickable(
-                            interactionSource = hoverInteraction,
-                            indication = null,
-                        ) { onClick() }
-                        .padding(4.dp)
-                        .size(16.dp),
-            )
-        }
-    }
-}
+//@OptIn(ExperimentalMaterial3Api::class)
+//@Suppress("FunctionNaming", "DEPRECATION")
+//@Composable
+//private fun TitleBarScope.TitleBarIconButton(
+//    imageVector: ImageVector,
+//    contentDescription: String,
+//    modifier: Modifier = Modifier,
+//    onClick: () -> Unit,
+//) {
+//    val hoverInteraction = remember { MutableInteractionSource() }
+//    val isHovered by hoverInteraction.collectIsHoveredAsState()
+//
+//    Box(modifier = modifier) {
+//        TooltipBox(
+//            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(),
+//            tooltip = { PlainTooltip { Text(contentDescription) } },
+//            state = rememberTooltipState(),
+//        ) {
+//            Icon(
+//                imageVector = imageVector,
+//                contentDescription = contentDescription,
+//                tint = MaterialTheme.colorScheme.onSurface,
+//                modifier =
+//                    Modifier
+//                        .padding(horizontal = 4.dp)
+//                        .clip(CircleShape)
+//                        .hoverable(hoverInteraction)
+//                        .background(
+//                            if (isHovered) {
+//                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+//                            } else {
+//                                Color.Transparent
+//                            },
+//                        ).clickable(
+//                            interactionSource = hoverInteraction,
+//                            indication = null,
+//                        ) { onClick() }
+//                        .padding(4.dp)
+//                        .size(16.dp),
+//            )
+//        }
+//    }
+//}

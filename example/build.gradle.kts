@@ -20,12 +20,12 @@ dependencies {
     implementation(compose.desktop.currentOs)
     implementation("org.jetbrains.compose.material3:material3:1.9.0")
     implementation(project(":core-runtime"))
-    implementation(project(":aot-runtime"))
+//    implementation(project(":aot-runtime"))
     implementation(project(":updater-runtime"))
-    implementation(project(":darkmode-detector"))
-    implementation(project(":decorated-window-material"))
-    implementation(project(":decorated-window-jni"))
-    implementation(project(":graalvm-runtime"))
+//    implementation(project(":darkmode-detector"))
+//    implementation(project(":decorated-window-material"))
+//    implementation(project(":decorated-window-jni"))
+//    implementation(project(":graalvm-runtime"))
 }
 
 val releaseVersion =
@@ -48,35 +48,35 @@ nucleus.application {
         }
     }
 
-    graalvm {
-        isEnabled = true
-        javaLanguageVersion = 25
-        jvmVendor = JvmVendorSpec.BELLSOFT
-        imageName = "nucleus-sample"
-        march = providers.gradleProperty("nativeMarch").getOrElse("compatibility")
-        buildArgs.addAll(
-            "-H:+AddAllCharsets",
-            "-Djava.awt.headless=false",
-            "-Os",
-            "-H:-IncludeMethodData",
-        )
-        nativeImageConfigBaseDir.set(
-            layout.projectDirectory.dir(
-                when {
-                    org.gradle.internal.os.OperatingSystem
-                        .current()
-                        .isMacOsX -> "src/main/resources-macos/META-INF/native-image"
-                    org.gradle.internal.os.OperatingSystem
-                        .current()
-                        .isWindows -> "src/main/resources-windows/META-INF/native-image"
-                    org.gradle.internal.os.OperatingSystem
-                        .current()
-                        .isLinux -> "src/main/resources-linux/META-INF/native-image"
-                    else -> throw GradleException("Unsupported OS")
-                },
-            ),
-        )
-    }
+//    graalvm {
+//        isEnabled = true
+//        javaLanguageVersion = 25
+//        jvmVendor = JvmVendorSpec.BELLSOFT
+//        imageName = "nucleus-sample"
+//        march = providers.gradleProperty("nativeMarch").getOrElse("compatibility")
+//        buildArgs.addAll(
+//            "-H:+AddAllCharsets",
+//            "-Djava.awt.headless=false",
+//            "-Os",
+//            "-H:-IncludeMethodData",
+//        )
+//        nativeImageConfigBaseDir.set(
+//            layout.projectDirectory.dir(
+//                when {
+//                    org.gradle.internal.os.OperatingSystem
+//                        .current()
+//                        .isMacOsX -> "src/main/resources-macos/META-INF/native-image"
+//                    org.gradle.internal.os.OperatingSystem
+//                        .current()
+//                        .isWindows -> "src/main/resources-windows/META-INF/native-image"
+//                    org.gradle.internal.os.OperatingSystem
+//                        .current()
+//                        .isLinux -> "src/main/resources-linux/META-INF/native-image"
+//                    else -> throw GradleException("Unsupported OS")
+//                },
+//            ),
+//        )
+//    }
 
     nativeDistributions {
         modules("jdk.accessibility", "java.net.http")
@@ -97,7 +97,7 @@ nucleus.application {
 
         // --- Native libs handling ---
         cleanupNativeLibs = true // Auto cleanup native libraries
-        enableAotCache = true // Enable AOT compilation cache
+        enableAotCache = false // Enable AOT compilation cache
         splashImage = "splash.png" // Splash screen image file
         homepage = "https://github.com/KdroidFilter/NucleusDemo"
 

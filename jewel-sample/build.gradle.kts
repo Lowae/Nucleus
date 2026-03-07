@@ -41,7 +41,7 @@ dependencies {
     implementation(compose.desktop.currentOs)
     implementation(project(":core-runtime"))
     implementation(project(":darkmode-detector"))
-    implementation(project(":decorated-window-jni"))
+//    implementation(project(":decorated-window-jni"))
     val jewelExclusions =
         Action<ExternalModuleDependency> {
             exclude(group = "org.jetbrains.skiko", module = "skiko-awt-runtime-all")
@@ -60,7 +60,7 @@ dependencies {
     implementation(libs.jna.jpms)
 
     // GraalVM font substitutions for native-image
-    implementation(project(":graalvm-runtime"))
+//    implementation(project(":graalvm-runtime"))
 }
 
 java {
@@ -97,35 +97,35 @@ nucleus.application {
         }
     }
 
-    graalvm {
-        isEnabled = true
-        javaLanguageVersion = 25
-        jvmVendor = JvmVendorSpec.BELLSOFT
-        imageName = "jewel-sample"
-        march = providers.gradleProperty("nativeMarch").getOrElse("native")
-        buildArgs.addAll(
-            "-H:+AddAllCharsets",
-            "-Djava.awt.headless=false",
-            "-Os",
-            "-H:-IncludeMethodData",
-        )
-        nativeImageConfigBaseDir.set(
-            layout.projectDirectory.dir(
-                when {
-                    org.gradle.internal.os.OperatingSystem
-                        .current()
-                        .isMacOsX -> "src/main/resources-macos/META-INF/native-image"
-                    org.gradle.internal.os.OperatingSystem
-                        .current()
-                        .isWindows -> "src/main/resources-windows/META-INF/native-image"
-                    org.gradle.internal.os.OperatingSystem
-                        .current()
-                        .isLinux -> "src/main/resources-linux/META-INF/native-image"
-                    else -> throw GradleException("Unsupported OS")
-                },
-            ),
-        )
-    }
+//    graalvm {
+//        isEnabled = true
+//        javaLanguageVersion = 25
+//        jvmVendor = JvmVendorSpec.BELLSOFT
+//        imageName = "jewel-sample"
+//        march = providers.gradleProperty("nativeMarch").getOrElse("native")
+//        buildArgs.addAll(
+//            "-H:+AddAllCharsets",
+//            "-Djava.awt.headless=false",
+//            "-Os",
+//            "-H:-IncludeMethodData",
+//        )
+//        nativeImageConfigBaseDir.set(
+//            layout.projectDirectory.dir(
+//                when {
+//                    org.gradle.internal.os.OperatingSystem
+//                        .current()
+//                        .isMacOsX -> "src/main/resources-macos/META-INF/native-image"
+//                    org.gradle.internal.os.OperatingSystem
+//                        .current()
+//                        .isWindows -> "src/main/resources-windows/META-INF/native-image"
+//                    org.gradle.internal.os.OperatingSystem
+//                        .current()
+//                        .isLinux -> "src/main/resources-linux/META-INF/native-image"
+//                    else -> throw GradleException("Unsupported OS")
+//                },
+//            ),
+//        )
+//    }
 
     nativeDistributions {
         modules("jdk.accessibility", "java.net.http")
