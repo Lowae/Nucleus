@@ -4,6 +4,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 plugins {
     kotlin("jvm")
     `java-gradle-plugin`
+    `maven-publish`
     alias(libs.plugins.pluginPublish)
 }
 

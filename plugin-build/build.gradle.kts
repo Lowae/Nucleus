@@ -10,6 +10,12 @@ plugins {
 
 val resolvedVersion =
     providers
+        .gradleProperty("nucleusPluginVersion")
+        .orNull
+        ?: providers
+            .environmentVariable("NUCLEUS_PLUGIN_VERSION")
+            .orNull
+        ?: providers
         .environmentVariable("GITHUB_REF")
         .orNull
         ?.removePrefix("refs/tags/v")

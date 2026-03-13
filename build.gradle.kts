@@ -73,6 +73,13 @@ tasks.register("reformatAll") {
     dependsOn(gradle.includedBuild("plugin-build").task(":plugin:ktlintFormat"))
 }
 
+tasks.register("publishPluginToMavenLocal") {
+    group = "publishing"
+    description = "Publishes the included Nucleus Gradle plugin to Maven Local."
+
+    dependsOn(gradle.includedBuild("plugin-build").task(":plugin:publishToMavenLocal"))
+}
+
 tasks.register("preMerge") {
     description = "Runs all the tests/verification tasks on both top level and included build."
 

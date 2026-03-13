@@ -84,6 +84,11 @@ abstract class AbstractElectronBuilderPackageTask
             private const val APPX_SQUARE150_LOGO_SIZE = 150
             private const val APPX_WIDE_LOGO_WIDTH = 310
             private const val APPX_WIDE_LOGO_HEIGHT = 150
+            private const val APPX_SQUARE44_LOGO_FILE_NAME = "Square44x44Logo.png"
+            private const val APPX_APP_LIST_UNPLATED_SUFFIX = "_altform-unplated"
+            private const val APPX_APP_LIST_LIGHT_UNPLATED_SUFFIX = "_altform-lightunplated"
+            private val APPX_APP_LIST_TARGET_SIZES =
+                listOf(16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256)
         }
 
         @get:InputDirectory
@@ -740,6 +745,17 @@ abstract class AbstractElectronBuilderPackageTask
             val source: File?,
         )
 
+        private enum class AppXAppListThemeVariant {
+            Default,
+            Unplated,
+            LightUnplated,
+        }
+
+        private data class AppXImageSource(
+            val image: BufferedImage,
+            val themeVariant: AppXAppListThemeVariant,
+        )
+
         private fun stageAppXAssets(
             outputDir: File,
             windowsIconOverride: File?,
@@ -814,11 +830,137 @@ abstract class AbstractElectronBuilderPackageTask
                 val source = asset.source
                 if (source != null) {
                     source.copyTo(target, overwrite = true)
+                    copyQualifiedAppXAssetVariants(source, stagedAssetsDir)
                 } else if (fallbackImage != null) {
                     val generated = resizeIconToCanvas(fallbackImage, asset.width, asset.height)
                     ImageIO.write(generated, "png", target)
                 }
             }
+
+            stageWindows11AppListAssets(assets, stagedAssetsDir, fallbackImage)
+        }
+
+        private fun copyQualifiedAppXAssetVariants(
+            source: File,
+            stagedAssetsDir: File,
+        ) {
+            for (variant in qualifiedAppXAssetVariants(source)) {
+                variant.copyTo(stagedAssetsDir.resolve(variant.name), overwrite = true)
+            }
+        }
+
+        private fun qualifiedAppXAssetVariants(source: File): List<File> {
+            val parent = source.parentFile ?: return emptyList()
+            val extension = source.extension
+            val baseName = source.nameWithoutExtension
+            return parent
+                .listFiles { candidate ->
+                    candidate.isFile &&
+                        candidate.name != source.name &&
+                        candidate.extension.equals(extension, ignoreCase = true) &&
+                        candidate.name.startsWith("$baseName.")
+                }
+                ?.sortedBy { it.name }
+                .orEmpty()
+        }
+
+        private fun stageWindows11AppListAssets(
+            assets: List<AppXAsset>,
+            stagedAssetsDir: File,
+            fallbackImage: BufferedImage?,
+        ) {
+            val square44Asset = assets.firstOrNull { it.targetFileName == APPX_SQUARE44_LOGO_FILE_NAME } ?: return
+            val sourceImages = collectAppXAppListSourceImages(square44Asset.source, fallbackImage)
+            if (sourceImages.isEmpty()) return
+
+            for (size in APPX_APP_LIST_TARGET_SIZES) {
+                for (
+                    suffix in listOf(
+                        "",
+                        APPX_APP_LIST_UNPLATED_SUFFIX,
+                        APPX_APP_LIST_LIGHT_UNPLATED_SUFFIX,
+                    )
+                ) {
+                    val target = stagedAssetsDir.resolve("Square44x44Logo.targetsize-$size$suffix.png")
+                    if (target.exists()) continue
+
+                    val source = selectAppXAppListSourceImage(sourceImages, suffix) ?: continue
+                    val generated = resizeIconToCanvas(source, size, size)
+                    ImageIO.write(generated, "png", target)
+                }
+            }
+        }
+
+        private fun collectAppXAppListSourceImages(
+            baseSource: File?,
+            fallbackImage: BufferedImage?,
+        ): List<AppXImageSource> {
+            val sources = mutableListOf<AppXImageSource>()
+            if (baseSource != null) {
+                val explicitSources = listOf(baseSource) + qualifiedAppXAssetVariants(baseSource)
+                for (source in explicitSources) {
+                    val image = readImage(source) ?: continue
+                    sources +=
+                        AppXImageSource(
+                            image = image,
+                            themeVariant = inferAppXAppListThemeVariant(source.name),
+                        )
+                }
+            }
+
+            if (fallbackImage != null) {
+                sources +=
+                    AppXImageSource(
+                        image = fallbackImage,
+                        themeVariant = AppXAppListThemeVariant.Default,
+                    )
+            }
+
+            return sources
+        }
+
+        private fun inferAppXAppListThemeVariant(fileName: String): AppXAppListThemeVariant =
+            when {
+                fileName.contains(APPX_APP_LIST_LIGHT_UNPLATED_SUFFIX, ignoreCase = true) -> AppXAppListThemeVariant.LightUnplated
+                fileName.contains(APPX_APP_LIST_UNPLATED_SUFFIX, ignoreCase = true) -> AppXAppListThemeVariant.Unplated
+                else -> AppXAppListThemeVariant.Default
+            }
+
+        private fun selectAppXAppListSourceImage(
+            sources: List<AppXImageSource>,
+            suffix: String,
+        ): BufferedImage? {
+            val preferredThemes =
+                when (suffix) {
+                    APPX_APP_LIST_LIGHT_UNPLATED_SUFFIX ->
+                        listOf(
+                            AppXAppListThemeVariant.LightUnplated,
+                            AppXAppListThemeVariant.Unplated,
+                            AppXAppListThemeVariant.Default,
+                        )
+
+                    APPX_APP_LIST_UNPLATED_SUFFIX ->
+                        listOf(
+                            AppXAppListThemeVariant.Unplated,
+                            AppXAppListThemeVariant.Default,
+                        )
+
+                    else ->
+                        listOf(
+                            AppXAppListThemeVariant.Default,
+                            AppXAppListThemeVariant.Unplated,
+                            AppXAppListThemeVariant.LightUnplated,
+                        )
+                }
+
+            return preferredThemes
+                .asSequence()
+                .mapNotNull { theme ->
+                    sources
+                        .filter { it.themeVariant == theme }
+                        .maxByOrNull { it.image.width * it.image.height }
+                        ?.image
+                }.firstOrNull()
         }
 
         private fun readImage(file: File?): BufferedImage? {

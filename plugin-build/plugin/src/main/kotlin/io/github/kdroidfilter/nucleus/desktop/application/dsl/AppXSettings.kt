@@ -53,15 +53,30 @@ abstract class AppXSettings {
     /** AppX capabilities (e.g. "runFullTrust"). Default: null */
     var capabilities: List<String>? = null
 
-    /** Store tile logo (mapped as `StoreLogo.png`) */
+    /**
+     * Store tile logo (mapped as `StoreLogo.png`).
+     * Qualified siblings like `StoreLogo.scale-200.png` are copied automatically.
+     */
     val storeLogo: RegularFileProperty = objects.fileProperty()
 
-    /** Small tile logo (mapped as `Square44x44Logo.png`) */
+    /**
+     * Small tile logo (mapped as `Square44x44Logo.png`).
+     * Qualified siblings like `Square44x44Logo.scale-200.png`,
+     * `Square44x44Logo.targetsize-32.png`, and
+     * `Square44x44Logo.targetsize-32_altform-unplated.png`
+     * are copied automatically.
+     */
     val square44x44Logo: RegularFileProperty = objects.fileProperty()
 
-    /** Medium tile logo (mapped as `Square150x150Logo.png`) */
+    /**
+     * Medium tile logo (mapped as `Square150x150Logo.png`).
+     * Qualified siblings like `Square150x150Logo.scale-200.png` are copied automatically.
+     */
     val square150x150Logo: RegularFileProperty = objects.fileProperty()
 
-    /** Wide tile logo (mapped as `Wide310x150Logo.png`) */
+    /**
+     * Wide tile logo (mapped as `Wide310x150Logo.png`).
+     * Qualified siblings like `Wide310x150Logo.scale-200.png` are copied automatically.
+     */
     val wide310x150Logo: RegularFileProperty = objects.fileProperty()
 }
