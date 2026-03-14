@@ -19,9 +19,25 @@ val resolvedVersion =
             .environmentVariable("NUCLEUS_PLUGIN_VERSION")
             .orNull
         ?: providers
+            .environmentVariable("JITPACK_VERSION")
+            .orNull
+        ?: providers
+            .environmentVariable("VERSION")
+            .orNull
+        ?: providers
             .environmentVariable("GITHUB_REF")
             .orNull
             ?.removePrefix("refs/tags/v")
+        ?: runCatching {
+            providers
+                .exec {
+                    commandLine("git", "describe", "--tags", "--abbrev=0")
+                }.standardOutput
+                .asText
+                .get()
+                .trim()
+                .removePrefix("v")
+        }.getOrNull()
         ?: "1.0.0"
 
 val resolvedGroup =
