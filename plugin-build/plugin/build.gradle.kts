@@ -4,6 +4,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 plugins {
     kotlin("jvm")
     `java-gradle-plugin`
+    `maven-publish`
     alias(libs.plugins.pluginPublish)
 }
 
@@ -59,7 +60,7 @@ sourceSets.main.configure {
 
 gradlePlugin {
     plugins {
-        create(property("ID").toString()) {
+        create("nucleus") {
             id = property("ID").toString()
             implementationClass = property("IMPLEMENTATION_CLASS").toString()
             version = project.version.toString()

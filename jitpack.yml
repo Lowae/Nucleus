@@ -1,2 +1,7 @@
 jdk:
   - openjdk17
+
+# Ensure the Gradle plugin implementation + marker artifacts are published to Maven Local,
+# so JitPack can serve them (required for Gradle Plugin DSL resolution).
+install:
+  - ./plugin-build/gradlew -p plugin-build :plugin:publishToMavenLocal

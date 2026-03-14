@@ -859,8 +859,7 @@ abstract class AbstractElectronBuilderPackageTask
                         candidate.name != source.name &&
                         candidate.extension.equals(extension, ignoreCase = true) &&
                         candidate.name.startsWith("$baseName.")
-                }
-                ?.sortedBy { it.name }
+                }?.sortedBy { it.name }
                 .orEmpty()
         }
 
@@ -874,13 +873,11 @@ abstract class AbstractElectronBuilderPackageTask
             if (sourceImages.isEmpty()) return
 
             for (size in APPX_APP_LIST_TARGET_SIZES) {
-                for (
-                    suffix in listOf(
-                        "",
-                        APPX_APP_LIST_UNPLATED_SUFFIX,
-                        APPX_APP_LIST_LIGHT_UNPLATED_SUFFIX,
-                    )
-                ) {
+                for (suffix in listOf(
+                    "",
+                    APPX_APP_LIST_UNPLATED_SUFFIX,
+                    APPX_APP_LIST_LIGHT_UNPLATED_SUFFIX,
+                )) {
                     val target = stagedAssetsDir.resolve("Square44x44Logo.targetsize-$size$suffix.png")
                     if (target.exists()) continue
 
