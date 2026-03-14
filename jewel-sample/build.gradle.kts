@@ -7,7 +7,7 @@ plugins {
     kotlin("jvm")
     alias(libs.plugins.kotlinComposePlugin)
     alias(libs.plugins.jetbrainsCompose)
-    id("io.github.kdroidfilter.nucleus")
+    id("com.github.Lowae.nucleus")
 }
 
 val jewelVersion = "0.34.0-253.31033.149"

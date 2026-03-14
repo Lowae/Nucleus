@@ -13,16 +13,28 @@ val resolvedVersion =
         .gradleProperty("nucleusPluginVersion")
         .orNull
         ?: providers
+            .gradleProperty("version")
+            .orNull
+        ?: providers
             .environmentVariable("NUCLEUS_PLUGIN_VERSION")
             .orNull
         ?: providers
-        .environmentVariable("GITHUB_REF")
-        .orNull
-        ?.removePrefix("refs/tags/v")
+            .environmentVariable("GITHUB_REF")
+            .orNull
+            ?.removePrefix("refs/tags/v")
         ?: "1.0.0"
 
+val resolvedGroup =
+    providers
+        .gradleProperty("group")
+        .orNull
+        ?: providers
+            .environmentVariable("NUCLEUS_PLUGIN_GROUP")
+            .orNull
+        ?: property("GROUP").toString()
+
 allprojects {
-    group = property("GROUP").toString()
+    group = resolvedGroup
     version = resolvedVersion
 
     apply {

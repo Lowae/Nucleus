@@ -13,7 +13,7 @@ plugins {
     alias(libs.plugins.kotlin)
     alias(libs.plugins.kotlinComposePlugin)
     alias(libs.plugins.jetbrainsCompose)
-    id("io.github.kdroidfilter.nucleus")
+    id("com.github.Lowae.nucleus")
 }
 
 dependencies {
