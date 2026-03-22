@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.compositionLocalOf
@@ -15,6 +16,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.ComposeDialog
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasurePolicy
@@ -29,6 +31,7 @@ import androidx.compose.ui.window.DialogWindowScope
 import io.github.kdroidfilter.nucleus.core.runtime.LinuxDesktopEnvironment
 import io.github.kdroidfilter.nucleus.window.internal.insideBorder
 import io.github.kdroidfilter.nucleus.window.styling.LocalDecoratedWindowStyle
+import io.github.kdroidfilter.nucleus.window.styling.LocalTitleBarStyle
 import java.awt.event.ComponentEvent
 import java.awt.event.ComponentListener
 import java.awt.event.WindowAdapter
@@ -229,6 +232,49 @@ fun DialogWindowScope.DecoratedDialogBody(
         } else {
             Modifier
         }
+
+    // Sync the AWT window background with the title bar color so that the
+    // native window surface matches during resize (avoids white flash).
+    // On Windows, Skiko's ContextHandler.draw() clears to Color.WHITE when
+    // SkiaLayer.transparency == false (the default). For dark themes we call
+    // setTransparency(true) so it clears to TRANSPARENT instead, which renders
+    // as opaque black on the DirectX surface (DXGI_ALPHA_MODE_IGNORE).
+    val isWindows = remember { System.getProperty("os.name").startsWith("Windows", ignoreCase = true) }
+    val titleBarBackground = LocalTitleBarStyle.current.colors.background
+    LaunchedEffect(window, titleBarBackground) {
+        val awtColor = java.awt.Color(titleBarBackground.toArgb(), true)
+        val isDark =
+            titleBarBackground.red * 0.299f +
+                titleBarBackground.green * 0.587f +
+                titleBarBackground.blue * 0.114f < 0.5f
+
+        fun applyRecursive(c: java.awt.Component) {
+            c.background = awtColor
+            // [Skiko #1141] Remove this once stable Compose uses Skiko with
+            //  https://github.com/JetBrains/skiko/pull/1141 —
+            //  ContextHandler.draw() always clears to TRANSPARENT now and
+            //  SkiaLayer.update() fills with the AWT background color instead.
+            // Windows only: set SkiaLayer transparency to match the theme so
+            // Skiko clears to TRANSPARENT (opaque black) instead of WHITE.
+            // NoSuchMethodException just means this component is not SkiaLayer.
+            if (isWindows) {
+                try {
+                    c.javaClass
+                        .getMethod("setTransparency", Boolean::class.javaPrimitiveType)
+                        .invoke(c, isDark)
+                } catch (_: NoSuchMethodException) {
+                    // Not SkiaLayer
+                } catch (_: Exception) {
+                    // Ignore other reflection errors
+                }
+            }
+            if (c is java.awt.Container) {
+                c.components.forEach { applyRecursive(it) }
+            }
+        }
+        applyRecursive(window)
+        javax.swing.SwingUtilities.invokeLater { applyRecursive(window) }
+    }
 
     CompositionLocalProvider(LocalDialogTitleBarInfo provides DialogTitleBarInfo(title, icon)) {
         Layout(

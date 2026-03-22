@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.compositionLocalOf
@@ -14,7 +15,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.ComposeWindow
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasurePolicy
@@ -32,7 +35,9 @@ import androidx.compose.ui.window.WindowPlacement
 import io.github.kdroidfilter.nucleus.core.runtime.LinuxDesktopEnvironment
 import io.github.kdroidfilter.nucleus.window.internal.insideBorder
 import io.github.kdroidfilter.nucleus.window.styling.LocalDecoratedWindowStyle
+import io.github.kdroidfilter.nucleus.window.styling.LocalTitleBarStyle
 import java.awt.ComponentOrientation
+import java.awt.Desktop
 import java.awt.Frame
 import java.awt.event.ComponentEvent
 import java.awt.event.ComponentListener
@@ -152,10 +157,15 @@ value class DecoratedWindowState(
     }
 }
 
-data class TitleBarInfo(
-    val title: String,
-    val icon: Painter?,
-)
+@Stable
+class TitleBarInfo(
+    title: String,
+    icon: Painter?,
+) {
+    var title by mutableStateOf(title)
+    var icon by mutableStateOf(icon)
+    val clientRegions: MutableMap<String, Rect> = mutableMapOf()
+}
 
 val LocalTitleBarInfo: ProvidableCompositionLocal<TitleBarInfo> =
     compositionLocalOf {
@@ -172,6 +182,7 @@ fun FrameWindowScope.DecoratedWindowBody(
     title: String,
     icon: Painter?,
     undecorated: Boolean,
+    onCloseRequest: () -> Unit = {},
     content: @Composable DecoratedWindowScope.() -> Unit,
 ) {
     var decoratedWindowState by remember { mutableStateOf(DecoratedWindowState.of(window)) }
@@ -271,10 +282,15 @@ fun FrameWindowScope.DecoratedWindowBody(
         window.addWindowStateListener(adapter)
         window.addComponentListener(adapter)
 
+        val quitHandlerInstalled = installSystemQuitHandler(onCloseRequest)
+
         onDispose {
             window.removeWindowListener(adapter)
             window.removeWindowStateListener(adapter)
             window.removeComponentListener(adapter)
+            if (quitHandlerInstalled) {
+                Desktop.getDesktop().setQuitHandler(null)
+            }
         }
     }
 
@@ -315,8 +331,66 @@ fun FrameWindowScope.DecoratedWindowBody(
             }
         }
 
+    // Sync the AWT window background with the title bar color so that the
+    // native window surface matches during resize (avoids white flash).
+    // On macOS, setting window.background is enough (sets NSWindow.backgroundColor
+    // at the compositor level). On Windows, each AWT component has its own HWND
+    // with its own WM_ERASEBKGND handler, so we must set the background on every
+    // component in the hierarchy to prevent any child from erasing with white.
+    // On Windows, Skiko's ContextHandler.draw() clears to Color.WHITE when
+    // SkiaLayer.transparency == false (the default). For dark themes we call
+    // setTransparency(true) so it clears to TRANSPARENT instead, which renders
+    // as opaque black on the DirectX surface (DXGI_ALPHA_MODE_IGNORE) and avoids
+    // the white resize flash.
+    // Restricted to Windows: on macOS the clear is always transparent (no issue),
+    // and on Linux enabling transparency composites with the desktop compositor,
+    // which would cause visual artifacts in dark themes.
+    val isWindows = remember { System.getProperty("os.name").startsWith("Windows", ignoreCase = true) }
+    val titleBarBackground = LocalTitleBarStyle.current.colors.background
+    LaunchedEffect(window, titleBarBackground) {
+        val awtColor = java.awt.Color(titleBarBackground.toArgb(), true)
+        val isDark =
+            titleBarBackground.red * 0.299f +
+                titleBarBackground.green * 0.587f +
+                titleBarBackground.blue * 0.114f < 0.5f
+
+        fun applyRecursive(c: java.awt.Component) {
+            c.background = awtColor
+            // [Skiko #1141] Remove this once stable Compose uses Skiko with
+            //  https://github.com/JetBrains/skiko/pull/1141 —
+            //  ContextHandler.draw() always clears to TRANSPARENT now and
+            //  SkiaLayer.update() fills with the AWT background color instead.
+            // Windows only: set SkiaLayer transparency to match the theme so
+            // Skiko clears to TRANSPARENT (opaque black) instead of WHITE.
+            // NoSuchMethodException just means this component is not SkiaLayer.
+            if (isWindows) {
+                try {
+                    c.javaClass
+                        .getMethod("setTransparency", Boolean::class.javaPrimitiveType)
+                        .invoke(c, isDark)
+                } catch (_: NoSuchMethodException) {
+                    // Not SkiaLayer
+                } catch (_: Exception) {
+                    // Ignore other reflection errors
+                }
+            }
+            if (c is java.awt.Container) {
+                c.components.forEach { applyRecursive(it) }
+            }
+        }
+        // Apply immediately (LaunchedEffect runs on the EDT in Compose Desktop)
+        // and also defer once to catch SkiaLayer if it was not yet added during
+        // the first composition frame.
+        applyRecursive(window)
+        javax.swing.SwingUtilities.invokeLater { applyRecursive(window) }
+    }
+
+    val titleBarInfo = remember { TitleBarInfo(title, icon) }
+    LaunchedEffect(title) { titleBarInfo.title = title }
+    LaunchedEffect(icon) { titleBarInfo.icon = icon }
+
     CompositionLocalProvider(
-        LocalTitleBarInfo provides TitleBarInfo(title, icon),
+        LocalTitleBarInfo provides titleBarInfo,
         LocalLayoutDirection provides platformLayoutDirection,
     ) {
         Layout(
@@ -336,3 +410,26 @@ fun FrameWindowScope.DecoratedWindowBody(
         )
     }
 }
+
+/**
+ * Installs a system-level quit handler that delegates to [onCloseRequest].
+ * On macOS this intercepts Cmd+Q, Dock → Quit, and App Menu → Quit.
+ * The system quit is always cancelled — [onCloseRequest] decides whether
+ * to call exitApplication() or show a confirmation dialog.
+ *
+ * @return true if the handler was installed successfully.
+ */
+private fun installSystemQuitHandler(onCloseRequest: () -> Unit): Boolean =
+    try {
+        if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.APP_QUIT_HANDLER)) {
+            Desktop.getDesktop().setQuitHandler { _, response ->
+                onCloseRequest()
+                response.cancelQuit()
+            }
+            true
+        } else {
+            false
+        }
+    } catch (_: UnsupportedOperationException) {
+        false
+    }

@@ -17,6 +17,7 @@ import io.github.kdroidfilter.nucleus.desktop.application.internal.electronbuild
 import io.github.kdroidfilter.nucleus.desktop.application.internal.electronbuilder.ElectronBuilderToolManager
 import io.github.kdroidfilter.nucleus.desktop.application.internal.electronbuilder.NodeJsDetector
 import io.github.kdroidfilter.nucleus.desktop.application.internal.files.isDylibPath
+import io.github.kdroidfilter.nucleus.desktop.application.internal.padDmgBackgroundForTitleBar
 import io.github.kdroidfilter.nucleus.desktop.application.internal.updateExecutableTypeInAppImage
 import io.github.kdroidfilter.nucleus.desktop.application.internal.validation.ValidatedMacOSSigningSettings
 import io.github.kdroidfilter.nucleus.desktop.application.internal.validation.validate
@@ -28,6 +29,9 @@ import io.github.kdroidfilter.nucleus.internal.utils.currentOS
 import io.github.kdroidfilter.nucleus.internal.utils.ioFile
 import io.github.kdroidfilter.nucleus.internal.utils.notNullProperty
 import io.github.kdroidfilter.nucleus.internal.utils.nullableProperty
+import net.coobird.thumbnailator.Thumbnails
+import net.coobird.thumbnailator.filters.Canvas
+import net.coobird.thumbnailator.geometry.Positions
 import org.gradle.api.GradleException
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
@@ -43,8 +47,8 @@ import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
-import java.awt.AlphaComposite
-import java.awt.RenderingHints
+import org.gradle.work.DisableCachingByDefault
+import java.awt.Color
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -60,7 +64,6 @@ import javax.imageio.ImageIO
 import javax.inject.Inject
 import kotlin.io.path.isExecutable
 import kotlin.io.path.isRegularFile
-import kotlin.math.min
 
 /**
  * Gradle task that packages a pre-built app-image (from jpackage) using electron-builder.
@@ -72,6 +75,7 @@ import kotlin.math.min
  *   4. Invoke electron-builder via npx with `--prepackaged`.
  *   5. Output the final installer/package to [destinationDir].
  */
+@DisableCachingByDefault(because = "Depends on external electron-builder tool")
 @Suppress("LargeClass", "TooManyFunctions")
 abstract class AbstractElectronBuilderPackageTask
     @Inject
@@ -120,6 +124,12 @@ abstract class AbstractElectronBuilderPackageTask
         @get:Input
         @get:Optional
         val executableName: Property<String> = objects.nullableProperty()
+
+        @get:Input
+        val targetArch: Property<String> =
+            objects.notNullProperty<String>().apply {
+                set(currentArch.id)
+            }
 
         @get:InputFile
         @get:Optional
@@ -221,7 +231,7 @@ abstract class AbstractElectronBuilderPackageTask
 
             ensureResourcesDirForElectronBuilder(workingAppDir)
             ensureLinuxExecutableAlias(workingAppDir)
-            updateExecutableTypeInAppImage(workingAppDir, targetFormat, logger)
+            updateExecutableTypeInAppImage(workingAppDir, targetFormat, logger, packageVersion.orNull)
             ensureMacAdHocSigning(workingAppDir, targetFormat)
 
             val npx = detectNpx()
@@ -293,7 +303,7 @@ abstract class AbstractElectronBuilderPackageTask
 
         private fun resolvePublishFlag(): String {
             val publish = distributions?.publish
-            val anyProviderEnabled = publish != null && (publish.github.enabled || publish.s3.enabled)
+            val anyProviderEnabled = publish != null && (publish.github.enabled || publish.s3.enabled || publish.generic.enabled)
             if (!anyProviderEnabled) {
                 logger.info("No publish provider enabled, using publish mode: never")
                 return "never"
@@ -312,7 +322,7 @@ abstract class AbstractElectronBuilderPackageTask
                 return propValue
             }
 
-            val dslValue = publish?.publishMode?.id ?: "never"
+            val dslValue = publish.publishMode.id
             logger.info("Using publish mode from DSL: $dslValue")
             return dslValue
         }
@@ -350,16 +360,32 @@ abstract class AbstractElectronBuilderPackageTask
             linuxAfterInstallTemplate: File?,
         ): File {
             val configGenerator = ElectronBuilderConfigGenerator()
+            val resolvedArch = Arch.entries.first { it.id == targetArch.get() }
+
+            // Pad the DMG background image to compensate for the macOS title bar (issue #26).
+            // electron-builder uses the image dimensions as the window size, causing the bottom
+            // of the image to be clipped by the height of the title bar.
+            val dmgBackgroundOverride =
+                if (targetFormat == TargetFormat.Dmg) {
+                    distributions.macOS.dmg.background.orNull?.asFile?.let { bgFile ->
+                        padDmgBackgroundForTitleBar(bgFile, outputDir.resolve("dmg-assets"), logger)
+                    }
+                } else {
+                    null
+                }
+
             val configContent =
                 configGenerator.generateConfig(
                     distributions = distributions,
                     targetFormat = targetFormat,
                     appImageDir = appDir,
+                    targetArch = resolvedArch,
                     startupWMClass = startupWMClass.orNull,
                     linuxIconOverride = linuxIconOverride,
                     windowsIconOverride = windowsIconOverride,
                     linuxAfterInstallTemplate = linuxAfterInstallTemplate,
                     executableName = executableName.orNull,
+                    dmgBackgroundOverride = dmgBackgroundOverride,
                 )
             val configFile = File(outputDir, "electron-builder.yml")
             configFile.writeText(configContent)
@@ -415,9 +441,15 @@ abstract class AbstractElectronBuilderPackageTask
             val sign = mac.signing.sign.orNull == true
             val dmg = mac.dmg
 
-            // Copy DMG asset files to a subdirectory so they travel with the metadata artifact
+            // Copy DMG asset files to a subdirectory so they travel with the metadata artifact.
+            // The background image is padded with extra pixels at the bottom to compensate for
+            // the macOS title bar — see issue #26 and padDmgBackgroundForTitleBar().
             val assetsDir = File(outputDir, "dmg-assets")
-            val dmgBackground = copyDmgAsset(dmg.background.orNull?.asFile, assetsDir, "background")
+            val dmgBackground =
+                dmg.background.orNull?.asFile?.let { bgFile ->
+                    val padded = padDmgBackgroundForTitleBar(bgFile, assetsDir, logger)
+                    copyDmgAsset(padded, assetsDir, "background")
+                }
             val dmgBadgeIcon = copyDmgAsset(dmg.badgeIcon.orNull?.asFile, assetsDir, "badge-icon")
             val dmgIcon = copyDmgAsset(dmg.icon.orNull?.asFile, assetsDir, "icon")
 
@@ -446,7 +478,21 @@ abstract class AbstractElectronBuilderPackageTask
                     appendLine("    \"windowX\": ${dmg.window.x ?: "null"},")
                     appendLine("    \"windowY\": ${dmg.window.y ?: "null"},")
                     appendLine("    \"windowWidth\": ${dmg.window.width ?: "null"},")
-                    appendLine("    \"windowHeight\": ${dmg.window.height ?: "null"}")
+                    appendLine("    \"windowHeight\": ${dmg.window.height ?: "null"},")
+                    appendLine("    \"contents\": [")
+                    for ((index, entry) in dmg.contents.withIndex()) {
+                        val comma = if (index < dmg.contents.size - 1) "," else ""
+                        val parts =
+                            buildList {
+                                add("\"x\": ${entry.x}")
+                                add("\"y\": ${entry.y}")
+                                entry.type?.let { add("\"type\": \"${it.id}\"") }
+                                entry.name?.let { add("\"name\": \"${it.escapeForJson()}\"") }
+                                entry.path?.let { add("\"path\": \"${it.escapeForJson()}\"") }
+                            }
+                        appendLine("      {${parts.joinToString(", ")}}$comma")
+                    }
+                    appendLine("    ]")
                     appendLine("  }")
                     appendLine("}")
                 }
@@ -575,7 +621,7 @@ abstract class AbstractElectronBuilderPackageTask
         }
 
         /**
-         * Re-signs the .app bundle for PKG (App Store) builds.
+         * Re-signs the .app bundle for PKG builds (always App Store).
          * Delegates to [resignApp] for the core signing, then augments entitlements
          * with application-identifier and team-identifier for App Store submissions.
          */
@@ -640,9 +686,9 @@ abstract class AbstractElectronBuilderPackageTask
         /**
          * Signs the PKG installer for App Store distribution using `productsign`.
          *
-         * electron-builder creates an unsigned PKG (because we return null for the installer
-         * identity in App Store mode), and this method re-signs it with the correct
-         * "3rd Party Mac Developer Installer" certificate.
+         * PKG is always treated as an App Store format. electron-builder creates an
+         * unsigned PKG (installer identity is always null), and this method re-signs
+         * it with the correct "3rd Party Mac Developer Installer" certificate.
          */
         private fun signPkgInstaller(outputDir: File) {
             if (currentOS != OS.MacOS) return
@@ -983,6 +1029,17 @@ abstract class AbstractElectronBuilderPackageTask
                         false
                     }
                 }
+                TargetFormat.Flatpak -> {
+                    if (!isCommandAvailable("flatpak")) {
+                        logger.lifecycle(
+                            "Skipping Flatpak packaging: 'flatpak' is not available on this runner. " +
+                                "Install it with: sudo apt-get install -y flatpak flatpak-builder",
+                        )
+                        true
+                    } else {
+                        false
+                    }
+                }
                 else -> false
             }
         }
@@ -1083,52 +1140,54 @@ abstract class AbstractElectronBuilderPackageTask
             source: BufferedImage,
             width: Int,
             height: Int,
-        ): BufferedImage {
-            val resized = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
-            val graphics = resized.createGraphics()
-            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
-            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
-            graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            graphics.drawImage(source, 0, 0, width, height, null)
-            graphics.dispose()
-            return resized
-        }
+        ): BufferedImage =
+            Thumbnails
+                .of(source)
+                .forceSize(width, height)
+                .imageType(BufferedImage.TYPE_INT_ARGB)
+                .asBufferedImage()
 
         private fun resizeIconToCanvas(
             source: BufferedImage,
             width: Int,
             height: Int,
-        ): BufferedImage {
-            val resized = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
-            val graphics = resized.createGraphics()
-            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
-            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
-            graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            graphics.composite = AlphaComposite.Src
-            graphics.fillRect(0, 0, width, height)
-
-            val scale = min(width.toDouble() / source.width, height.toDouble() / source.height)
-            val targetWidth = (source.width * scale).toInt().coerceAtLeast(1)
-            val targetHeight = (source.height * scale).toInt().coerceAtLeast(1)
-            val x = (width - targetWidth) / 2
-            val y = (height - targetHeight) / 2
-            graphics.drawImage(source, x, y, targetWidth, targetHeight, null)
-            graphics.dispose()
-            return resized
-        }
+        ): BufferedImage =
+            Thumbnails
+                .of(source)
+                .size(width, height)
+                .keepAspectRatio(true)
+                .addFilter(Canvas(width, height, Positions.CENTER, true, Color(0, 0, 0, 0)))
+                .imageType(BufferedImage.TYPE_INT_ARGB)
+                .asBufferedImage()
 
         private fun ensureLinuxExecutableAlias(appDir: File) {
             if (currentOS != OS.Linux) return
 
             val launcherName = packageName.get()
-            val launcher = appDir.resolve("bin").resolve(launcherName)
-            if (!launcher.isFile) {
+
+            // jpackage layout: bin/{packageName}
+            val jpackageLauncher = appDir.resolve("bin").resolve(launcherName)
+
+            // GraalVM native image layout: executable directly in appDir/
+            // The binary name may differ from packageName (e.g. imageName), so
+            // look for any executable file in appDir root.
+            val graalvmLauncher =
+                if (!jpackageLauncher.isFile) {
+                    appDir.listFiles()?.firstOrNull { it.isFile && it.canExecute() }
+                } else {
+                    null
+                }
+
+            val launcher = jpackageLauncher.takeIf { it.isFile } ?: graalvmLauncher
+            if (launcher == null) {
                 logger.warn(
-                    "Expected launcher not found at ${launcher.absolutePath}. " +
+                    "Expected launcher not found at ${jpackageLauncher.absolutePath}. " +
                         "Skipping Linux executable alias creation.",
                 )
                 return
             }
+
+            val relativePath = launcher.relativeTo(appDir).path
 
             val aliasName = launcherName.toNpmPackageName()
             val aliasFile = appDir.resolve(aliasName)
@@ -1146,7 +1205,7 @@ abstract class AbstractElectronBuilderPackageTask
                   esac
                 done
                 DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
-                exec "$DIR/bin/$$launcherName" "$@"
+                exec "$DIR/$$relativePath" "$@"
                 """.trimIndent() + "\n"
 
             aliasFile.writeText(script)

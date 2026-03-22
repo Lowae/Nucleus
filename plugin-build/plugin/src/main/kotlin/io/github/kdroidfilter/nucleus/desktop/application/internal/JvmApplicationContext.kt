@@ -10,6 +10,10 @@ import io.github.kdroidfilter.nucleus.internal.KOTLIN_JVM_PLUGIN_ID
 import io.github.kdroidfilter.nucleus.internal.KOTLIN_MPP_PLUGIN_ID
 import io.github.kdroidfilter.nucleus.internal.javaSourceSets
 import io.github.kdroidfilter.nucleus.internal.mppExt
+import io.github.kdroidfilter.nucleus.internal.utils.OS
+import io.github.kdroidfilter.nucleus.internal.utils.Target
+import io.github.kdroidfilter.nucleus.internal.utils.currentOS
+import io.github.kdroidfilter.nucleus.internal.utils.jdkArch
 import io.github.kdroidfilter.nucleus.internal.utils.joinDashLowercaseNonEmpty
 import org.gradle.api.Project
 import org.gradle.api.Task
@@ -46,10 +50,35 @@ internal data class JvmApplicationContext(
         runtimeFiles.configureUsageBy(this, fn)
     }
 
+    /** Architecture of the configured JDK (may differ from the Gradle daemon's arch when cross-building). */
+    val targetArch by lazy { jdkArch(java.io.File(app.javaHome)) }
+
+    /** Target combining the current OS with the configured JDK's architecture. */
+    val targetTarget by lazy { Target(currentOS, targetArch) }
+
     val tasks = JvmTasks(project, buildType, taskGroup)
 
     val packageNameProvider: Provider<String>
         get() = project.provider { appInternal.nativeDistributions.packageName ?: project.name }
+
+    /**
+     * Resolves the platform-specific application ID:
+     * - macOS: bundleID > macOS.packageName > root packageName > project.name
+     * - Linux: linux.packageName > root packageName > project.name
+     * - Windows: windows.packageName > root packageName > project.name
+     */
+    fun resolvedAppIdProvider(): Provider<String> =
+        project.provider {
+            val dist = appInternal.nativeDistributions
+            when (currentOS) {
+                OS.MacOS -> {
+                    val mac = dist.macOS
+                    mac.bundleID ?: mac.packageName ?: dist.packageName ?: project.name
+                }
+                OS.Linux -> dist.linux.packageName ?: dist.packageName ?: project.name
+                OS.Windows -> dist.windows.packageName ?: dist.packageName ?: project.name
+            }
+        }
 
     inline fun <reified T : Any> provider(noinline fn: () -> T): Provider<T> = project.provider(fn)
 

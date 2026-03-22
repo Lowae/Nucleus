@@ -5,9 +5,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.currentCompositionLocalContext
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -28,28 +31,44 @@ internal fun DecoratedWindowScope.WindowsTitleBar(
     modifier: Modifier = Modifier,
     gradientStartColor: Color = Color.Unspecified,
     style: TitleBarStyle = LocalTitleBarStyle.current,
+    controlButtonsDirection: ControlButtonsDirection = ControlButtonsDirection.Auto,
+    backgroundContent: @Composable () -> Unit = {},
     content: @Composable TitleBarScope.(DecoratedWindowState) -> Unit = {},
 ) {
     if (JniWindowsDecorationBridge.isLoaded) {
-        NativeWindowsTitleBar(modifier, gradientStartColor, style, content)
+        NativeWindowsTitleBar(
+            modifier,
+            gradientStartColor,
+            style,
+            controlButtonsDirection,
+            backgroundContent,
+            content,
+        )
     } else {
-        FallbackWindowsTitleBar(modifier, gradientStartColor, style, content)
+        FallbackWindowsTitleBar(
+            modifier,
+            gradientStartColor,
+            style,
+            controlButtonsDirection,
+            backgroundContent,
+            content,
+        )
     }
 }
 
-// Native title bar: uses JNI WndProc subclass for resize borders and DWM shadow.
-// All title bar clicks go to Compose. Drag is initiated from Compose via nativeStartDrag
-// when a press is unconsumed by interactive elements (buttons, switches, etc.).
-// Double-click to maximize is handled in Compose.
 @OptIn(ExperimentalComposeUiApi::class)
-@Suppress("FunctionNaming")
+@Suppress("FunctionNaming", "LongMethod")
 @Composable
 private fun DecoratedWindowScope.NativeWindowsTitleBar(
     modifier: Modifier,
     gradientStartColor: Color,
     style: TitleBarStyle,
+    controlButtonsDirection: ControlButtonsDirection,
+    backgroundContent: @Composable () -> Unit,
     content: @Composable TitleBarScope.(DecoratedWindowState) -> Unit,
 ) {
+    val isNativeFullscreen = LocalNativeFullscreen.current
+    val onExitFullscreen = LocalExitFullscreen.current
     val density = LocalDensity.current
     val viewConfig = LocalViewConfiguration.current
     var lastPressTime = 0L
@@ -70,10 +89,59 @@ private fun DecoratedWindowScope.NativeWindowsTitleBar(
         }
     }
 
+    // Sync native background fill color with the title bar color so that
+    // WM_ERASEBKGND fills with the correct color during resize (avoids white flash).
+    val titleBarBackground = style.colors.background
+    LaunchedEffect(window, titleBarBackground) {
+        val hwnd = JniWindowsWindowUtil.getHwnd(window)
+        if (hwnd != 0L) {
+            JniWindowsDecorationBridge.nativeSetBackgroundColor(hwnd, titleBarBackground.toArgb())
+        }
+    }
+
+    val useNewFullscreenControls = modifier.hasNewFullscreenControls()
+
+    // ── Fullscreen with newFullscreenControls: sliding overlay ──
+    if (isNativeFullscreen && useNewFullscreenControls) {
+        LaunchedEffect(window) {
+            val hwnd = JniWindowsWindowUtil.getHwnd(window)
+            if (hwnd != 0L) JniWindowsDecorationBridge.nativeSetTitleBarHeight(hwnd, 0)
+        }
+
+        // Store rendering into the holder so DecoratedWindow can render it
+        // as a floating overlay outside the DecoratedWindowBody layout.
+        val holder = LocalFullscreenTitleBarHolder.current
+        if (holder != null) {
+            holder.compositionLocalContext = currentCompositionLocalContext
+            holder.titleBarHeight = style.metrics.height
+            holder.content = {
+                TitleBarImpl(
+                    modifier = modifier,
+                    gradientStartColor = gradientStartColor,
+                    style = style,
+                    controlButtonsDirection = controlButtonsDirection.resolve(),
+                    applyTitleBar = { _, _ -> PaddingValues(0.dp) },
+                ) { currentState ->
+                    WindowsWindowControlArea(
+                        window = window,
+                        state = currentState,
+                        style = style,
+                        isFullscreen = true,
+                        onExitFullscreen = onExitFullscreen,
+                    )
+                    content(currentState)
+                }
+            }
+        }
+        return
+    }
+
+    // ── Normal title bar (or fullscreen without newFullscreenControls) ──
     TitleBarImpl(
         modifier = modifier,
         gradientStartColor = gradientStartColor,
         style = style,
+        controlButtonsDirection = controlButtonsDirection.resolve(),
         applyTitleBar = { height, _ ->
             val hwnd = JniWindowsWindowUtil.getHwnd(window)
             if (hwnd != 0L) {
@@ -83,9 +151,7 @@ private fun DecoratedWindowScope.NativeWindowsTitleBar(
             PaddingValues(0.dp)
         },
         backgroundContent = {
-            // Background handles drag and double-click for the non-interactive
-            // area. Interactive elements (buttons, switches) are in the foreground
-            // and consume the press, so it never reaches this handler.
+            backgroundContent()
             Spacer(
                 modifier =
                     Modifier
@@ -98,14 +164,12 @@ private fun DecoratedWindowScope.NativeWindowsTitleBar(
                                 val now = System.currentTimeMillis()
                                 val elapsed = now - lastPressTime
                                 if (elapsed in viewConfig.doubleTapMinTimeMillis..viewConfig.doubleTapTimeoutMillis) {
-                                    // Double-click: toggle maximize
                                     if (state.isMaximized) {
                                         window.extendedState = Frame.NORMAL
                                     } else {
                                         window.extendedState = Frame.MAXIMIZED_BOTH
                                     }
                                 } else {
-                                    // Single press: initiate native drag
                                     val hwnd = JniWindowsWindowUtil.getHwnd(window)
                                     if (hwnd != 0L) {
                                         JniWindowsDecorationBridge.nativeStartDrag(hwnd)
@@ -117,7 +181,13 @@ private fun DecoratedWindowScope.NativeWindowsTitleBar(
             )
         },
     ) { currentState ->
-        WindowsWindowControlArea(window, currentState, style)
+        WindowsWindowControlArea(
+            window = window,
+            state = currentState,
+            style = style,
+            isFullscreen = isNativeFullscreen,
+            onExitFullscreen = onExitFullscreen,
+        )
         content(currentState)
     }
 }
@@ -130,6 +200,8 @@ private fun DecoratedWindowScope.FallbackWindowsTitleBar(
     modifier: Modifier,
     gradientStartColor: Color,
     style: TitleBarStyle,
+    controlButtonsDirection: ControlButtonsDirection,
+    backgroundContent: @Composable () -> Unit,
     content: @Composable TitleBarScope.(DecoratedWindowState) -> Unit,
 ) {
     val viewConfig = LocalViewConfiguration.current
@@ -155,8 +227,10 @@ private fun DecoratedWindowScope.FallbackWindowsTitleBar(
             },
         gradientStartColor = gradientStartColor,
         style = style,
+        controlButtonsDirection = controlButtonsDirection.resolve(),
         applyTitleBar = { _, _ -> PaddingValues(0.dp) },
         backgroundContent = {
+            backgroundContent()
             Spacer(modifier = Modifier.fillMaxSize().windowDragHandler(window))
         },
     ) { currentState ->

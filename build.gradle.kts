@@ -3,6 +3,8 @@ import dev.detekt.gradle.Detekt
 
 plugins {
     alias(libs.plugins.kotlin) apply false
+    alias(libs.plugins.kotlinMultiplatform) apply false
+    alias(libs.plugins.androidApplication) apply false
     alias(libs.plugins.vanniktechMavenPublish) apply false
     alias(libs.plugins.graalvmNative) apply false
     alias(libs.plugins.detekt)
@@ -93,8 +95,11 @@ tasks.register("preMerge") {
     dependsOn(":decorated-window-core:check")
     dependsOn(":decorated-window-jbr:check")
     dependsOn(":decorated-window-jni:check")
-    dependsOn(":decorated-window-material:check")
+    dependsOn(":decorated-window-jewel:check")
+    dependsOn(":decorated-window-material2:check")
+    dependsOn(":decorated-window-material3:check")
     dependsOn(":graalvm-runtime:check")
+    dependsOn(":system-color:check")
     dependsOn(":example:check")
     dependsOn(gradle.includedBuild("plugin-build").task(":plugin:check"))
     dependsOn(gradle.includedBuild("plugin-build").task(":plugin:validatePlugins"))

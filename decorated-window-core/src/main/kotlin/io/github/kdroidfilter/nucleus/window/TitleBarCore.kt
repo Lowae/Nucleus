@@ -35,9 +35,11 @@ import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.ParentDataModifierNode
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.offset
 import io.github.kdroidfilter.nucleus.window.styling.LocalTitleBarStyle
 import io.github.kdroidfilter.nucleus.window.styling.TitleBarStyle
@@ -50,6 +52,14 @@ private const val GRADIENT_MIDPOINT = 0.5f
 
 val LocalContentColor = staticCompositionLocalOf { Color.Black }
 
+/**
+ * The resolved layout direction for window control buttons.
+ * Provided by [GenericTitleBarImpl] so that control button composables
+ * can apply this as [LocalLayoutDirection] around their content,
+ * independently of the app's content direction.
+ */
+val LocalControlButtonsDirection = staticCompositionLocalOf { LayoutDirection.Ltr }
+
 @Suppress("FunctionNaming", "LongParameterList")
 @Composable
 fun GenericTitleBarImpl(
@@ -58,6 +68,7 @@ fun GenericTitleBarImpl(
     modifier: Modifier = Modifier,
     gradientStartColor: Color = Color.Unspecified,
     style: TitleBarStyle = LocalTitleBarStyle.current,
+    controlButtonsDirection: LayoutDirection = LocalLayoutDirection.current,
     applyTitleBar: (Dp, DecoratedWindowState) -> PaddingValues,
     onPlace: (() -> Unit)? = null,
     backgroundContent: @Composable () -> Unit = {},
@@ -101,13 +112,15 @@ fun GenericTitleBarImpl(
             content = {
                 CompositionLocalProvider(
                     LocalContentColor provides style.colors.content,
+                    LocalControlButtonsDirection provides controlButtonsDirection,
                 ) {
                     val scope = TitleBarScopeImpl(titleBarInfo.title, titleBarInfo.icon)
                     scope.content(state)
                 }
             },
             modifier = Modifier.fillMaxSize(),
-            measurePolicy = rememberTitleBarMeasurePolicy(window, state, applyTitleBar, onPlace),
+            measurePolicy =
+                rememberTitleBarMeasurePolicy(window, state, applyTitleBar, controlButtonsDirection, onPlace),
         )
     }
 }
@@ -118,6 +131,7 @@ fun DecoratedWindowScope.TitleBarImpl(
     modifier: Modifier = Modifier,
     gradientStartColor: Color = Color.Unspecified,
     style: TitleBarStyle = LocalTitleBarStyle.current,
+    controlButtonsDirection: LayoutDirection = LocalLayoutDirection.current,
     applyTitleBar: (Dp, DecoratedWindowState) -> PaddingValues,
     onPlace: (() -> Unit)? = null,
     backgroundContent: @Composable () -> Unit = {},
@@ -129,6 +143,7 @@ fun DecoratedWindowScope.TitleBarImpl(
         modifier = modifier,
         gradientStartColor = gradientStartColor,
         style = style,
+        controlButtonsDirection = controlButtonsDirection,
         applyTitleBar = applyTitleBar,
         onPlace = onPlace,
         backgroundContent = backgroundContent,
@@ -140,6 +155,7 @@ class TitleBarMeasurePolicy(
     private val window: Window,
     private val state: DecoratedWindowState,
     private val applyTitleBar: (Dp, DecoratedWindowState) -> PaddingValues,
+    private val controlButtonsDirection: LayoutDirection,
     private val onPlace: (() -> Unit)? = null,
 ) : MeasurePolicy {
     @Suppress("CyclomaticComplexMethod", "LongMethod")
@@ -190,8 +206,9 @@ class TitleBarMeasurePolicy(
 
         val contentPadding = applyTitleBar(boxHeight.toDp(), state)
 
-        val leftInset = contentPadding.calculateLeftPadding(layoutDirection).roundToPx()
-        val rightInset = contentPadding.calculateRightPadding(layoutDirection).roundToPx()
+        // Use Ltr to get absolute left/right insets.
+        val leftInset = contentPadding.calculateLeftPadding(LayoutDirection.Ltr).roundToPx()
+        val rightInset = contentPadding.calculateRightPadding(LayoutDirection.Ltr).roundToPx()
 
         val occupiedSpaceHorizontally = endOccupied + otherOccupied + leftInset + rightInset
         val boxWidth = maxOf(constraints.minWidth, occupiedSpaceHorizontally)
@@ -205,41 +222,51 @@ class TitleBarMeasurePolicy(
                         ?: Alignment.CenterHorizontally
                 }
 
-            var headUsedSpace = leftInset
-            var trailerUsedSpace = rightInset
+            val contentIsRtl = layoutDirection == LayoutDirection.Rtl
+            val controlsOnRight = controlButtonsDirection == LayoutDirection.Ltr
 
-            placeableGroups[Alignment.Start]?.forEach { (_, placeable) ->
-                val x = headUsedSpace
-                val y = Alignment.CenterVertically.align(placeable.height, boxHeight)
-                placeable.placeRelative(x, y)
-                headUsedSpace += placeable.width
-            }
+            // Absolute occupied-space tracking for each side
+            var leftUsed = leftInset
+            var rightUsed = rightInset
+
+            // End items (control buttons) first — they claim the extreme edge
+            // before Start items, so they always stay at their designated side
+            // even when content and controls share the same edge.
             placeableGroups[Alignment.End]?.forEach { (_, placeable) ->
-                val x = boxWidth - placeable.width - trailerUsedSpace
                 val y = Alignment.CenterVertically.align(placeable.height, boxHeight)
-                placeable.placeRelative(x, y)
-                trailerUsedSpace += placeable.width
+                if (controlsOnRight) {
+                    placeable.place(boxWidth - rightUsed - placeable.width, y)
+                    rightUsed += placeable.width
+                } else {
+                    placeable.place(leftUsed, y)
+                    leftUsed += placeable.width
+                }
             }
 
-            val centerPlaceable = placeableGroups[Alignment.CenterHorizontally].orEmpty()
+            // Start items: leading edge of the content direction
+            placeableGroups[Alignment.Start]?.forEach { (_, placeable) ->
+                val y = Alignment.CenterVertically.align(placeable.height, boxHeight)
+                if (contentIsRtl) {
+                    placeable.place(boxWidth - rightUsed - placeable.width, y)
+                    rightUsed += placeable.width
+                } else {
+                    placeable.place(leftUsed, y)
+                    leftUsed += placeable.width
+                }
+            }
 
+            // Center items: clamped between occupied edges
+            val centerPlaceable = placeableGroups[Alignment.CenterHorizontally].orEmpty()
             val requiredCenterSpace = centerPlaceable.sumOf { it.second.width }
-            val minX = headUsedSpace
-            val maxX = boxWidth - trailerUsedSpace - requiredCenterSpace
+            val minX = leftUsed
+            val maxX = boxWidth - rightUsed - requiredCenterSpace
             var centerX = (boxWidth - requiredCenterSpace) / 2
 
             if (minX <= maxX) {
-                if (centerX > maxX) {
-                    centerX = maxX
-                }
-                if (centerX < minX) {
-                    centerX = minX
-                }
-
+                centerX = centerX.coerceIn(minX, maxX)
                 centerPlaceable.forEach { (_, placeable) ->
-                    val x = centerX
                     val y = Alignment.CenterVertically.align(placeable.height, boxHeight)
-                    placeable.placeRelative(x, y)
+                    placeable.place(centerX, y)
                     centerX += placeable.width
                 }
             }
@@ -252,10 +279,11 @@ fun rememberTitleBarMeasurePolicy(
     window: Window,
     state: DecoratedWindowState,
     applyTitleBar: (Dp, DecoratedWindowState) -> PaddingValues,
+    controlButtonsDirection: LayoutDirection = LocalLayoutDirection.current,
     onPlace: (() -> Unit)? = null,
 ): MeasurePolicy =
-    remember(window, state, applyTitleBar, onPlace) {
-        TitleBarMeasurePolicy(window, state, applyTitleBar, onPlace)
+    remember(window, state, applyTitleBar, controlButtonsDirection, onPlace) {
+        TitleBarMeasurePolicy(window, state, applyTitleBar, controlButtonsDirection, onPlace)
     }
 
 @Stable

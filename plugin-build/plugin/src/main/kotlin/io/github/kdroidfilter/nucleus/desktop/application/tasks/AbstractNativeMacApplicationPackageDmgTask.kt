@@ -7,6 +7,8 @@ package io.github.kdroidfilter.nucleus.desktop.application.tasks
 
 import io.github.kdroidfilter.nucleus.desktop.application.dsl.DmgContentEntry
 import io.github.kdroidfilter.nucleus.desktop.application.dsl.DmgFormat
+import io.github.kdroidfilter.nucleus.desktop.application.internal.MACOS_DMG_TITLE_BAR_HEIGHT
+import io.github.kdroidfilter.nucleus.desktop.application.internal.readImageDimensions
 import io.github.kdroidfilter.nucleus.internal.utils.ioFile
 import io.github.kdroidfilter.nucleus.internal.utils.notNullProperty
 import org.gradle.api.file.DirectoryProperty
@@ -19,8 +21,10 @@ import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
+import org.gradle.work.DisableCachingByDefault
 import java.io.File
 
+@DisableCachingByDefault(because = "Depends on external macOS native tools")
 abstract class AbstractNativeMacApplicationPackageDmgTask : AbstractNativeMacApplicationPackageTask() {
     companion object {
         private const val DEFAULT_ICON_SIZE = 72
@@ -45,6 +49,7 @@ abstract class AbstractNativeMacApplicationPackageDmgTask : AbstractNativeMacApp
     val installDir: Property<String> = objects.notNullProperty("/Applications")
 
     @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
     val appDir: DirectoryProperty = objects.directoryProperty()
 
     @get:Input
@@ -78,6 +83,11 @@ abstract class AbstractNativeMacApplicationPackageDmgTask : AbstractNativeMacApp
     @get:Input
     @get:Optional
     val dmgBackgroundColor: Property<String> = objects.property(String::class.java)
+
+    @get:InputFile
+    @get:Optional
+    @get:PathSensitive(PathSensitivity.ABSOLUTE)
+    val dmgBackgroundImage: RegularFileProperty = objects.fileProperty()
 
     @get:Input
     val dmgContents: ListProperty<DmgContentEntry> =
@@ -221,9 +231,34 @@ abstract class AbstractNativeMacApplicationPackageDmgTask : AbstractNativeMacApp
         val iconSize = dmgIconSize.orNull ?: DEFAULT_ICON_SIZE
         val winX = dmgWindowX.orNull ?: DEFAULT_WINDOW_X
         val winY = dmgWindowY.orNull ?: DEFAULT_WINDOW_Y
-        val winW = dmgWindowWidth.orNull ?: DEFAULT_WINDOW_WIDTH
-        val winH = dmgWindowHeight.orNull ?: DEFAULT_WINDOW_HEIGHT
+        var winW = dmgWindowWidth.orNull ?: DEFAULT_WINDOW_WIDTH
+        var winH = dmgWindowHeight.orNull ?: DEFAULT_WINDOW_HEIGHT
         val contents = dmgContents.get()
+
+        // Copy background image to the mounted volume and adjust window size
+        val backgroundFile = dmgBackgroundImage.orNull?.asFile
+        var backgroundFileName: String? = null
+        if (backgroundFile != null && backgroundFile.isFile) {
+            val volumePath = File("/Volumes/$disk")
+            val bgDir = File(volumePath, ".background")
+            bgDir.mkdirs()
+            val bgDest = File(bgDir, "background.${backgroundFile.extension}")
+            backgroundFile.copyTo(bgDest, overwrite = true)
+            backgroundFileName = bgDest.name
+
+            // Adjust window size to fit the background image (issue #26).
+            // The Finder window bounds include the title bar, so the content area
+            // is (boundsHeight - titleBarHeight). We ensure the window is large enough
+            // for the full image to be visible.
+            val dimensions = readImageDimensions(backgroundFile)
+            if (dimensions != null) {
+                val (imgW, imgH) = dimensions
+                val requiredW = imgW
+                val requiredH = imgH + MACOS_DMG_TITLE_BAR_HEIGHT
+                if (winW < requiredW) winW = requiredW
+                if (winH < requiredH) winH = requiredH
+            }
+        }
 
         val scriptBuilder = StringBuilder()
         scriptBuilder.appendLine("""tell application "Finder"""")
@@ -241,11 +276,17 @@ abstract class AbstractNativeMacApplicationPackageDmgTask : AbstractNativeMacApp
         scriptBuilder.appendLine("        set arrangement of theViewOptions to not arranged")
         scriptBuilder.appendLine("        set icon size of theViewOptions to $iconSize")
 
-        dmgBackgroundColor.orNull?.let { color ->
-            val rgb = cssColorToAppleScriptRgb(color)
+        if (backgroundFileName != null) {
             scriptBuilder.appendLine(
-                "        set background color of theViewOptions to {$rgb}",
+                "        set background picture of theViewOptions to file \".background:$backgroundFileName\"",
             )
+        } else {
+            dmgBackgroundColor.orNull?.let { color ->
+                val rgb = cssColorToAppleScriptRgb(color)
+                scriptBuilder.appendLine(
+                    "        set background color of theViewOptions to {$rgb}",
+                )
+            }
         }
 
         if (contents.isEmpty()) {

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -20,6 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.dp
 import io.github.kdroidfilter.nucleus.window.styling.TitleBarStyle
 import io.github.kdroidfilter.nucleus.window.utils.windows.windowsTitleBarIcons
@@ -53,54 +55,69 @@ fun TitleBarScope.WindowsWindowControlArea(
     window: java.awt.Window,
     state: DecoratedWindowState,
     style: TitleBarStyle,
+    isFullscreen: Boolean = false,
+    onExitFullscreen: (() -> Unit)? = null,
 ) {
-    val icons = windowsTitleBarIcons()
+    CompositionLocalProvider(LocalLayoutDirection provides LocalControlButtonsDirection.current) {
+        val icons = windowsTitleBarIcons()
 
-    // Close button (placed first with Alignment.End, so it's rightmost)
-    WindowsCaptionButton(
-        onClick = { window.dispatchEvent(WindowEvent(window, WindowEvent.WINDOW_CLOSING)) },
-        state = state,
-        style = style,
-        icon = if (state.isActive) icons.close else icons.closeInactive,
-        iconHover = icons.closeHover,
-        contentDescription = "Close",
-        isCloseButton = true,
-    )
+        // Close button (placed first with Alignment.End, so it's rightmost)
+        WindowsCaptionButton(
+            onClick = { window.dispatchEvent(WindowEvent(window, WindowEvent.WINDOW_CLOSING)) },
+            state = state,
+            style = style,
+            icon = if (state.isActive) icons.close else icons.closeInactive,
+            iconHover = icons.closeHover,
+            contentDescription = "Close",
+            isCloseButton = true,
+        )
 
-    // Maximize/Restore button (only if resizable)
-    val frame = window as? Frame
-    if (frame != null && frame.isResizable) {
-        if (state.isMaximized) {
+        // In fullscreen: show exit-fullscreen button instead of maximize/restore
+        if (isFullscreen && onExitFullscreen != null) {
             WindowsCaptionButton(
-                onClick = { frame.extendedState = Frame.NORMAL },
+                onClick = onExitFullscreen,
                 state = state,
                 style = style,
-                icon = if (state.isActive) icons.restore else icons.restoreInactive,
-                contentDescription = "Restore",
+                icon = if (state.isActive) icons.exitFullscreen else icons.exitFullscreenInactive,
+                contentDescription = "Exit fullscreen",
             )
         } else {
-            WindowsCaptionButton(
-                onClick = { frame.extendedState = Frame.MAXIMIZED_BOTH },
-                state = state,
-                style = style,
-                icon = if (state.isActive) icons.maximize else icons.maximizeInactive,
-                contentDescription = "Maximize",
-            )
-        }
-    }
-
-    // Minimize button (placed last with Alignment.End, so it's leftmost)
-    WindowsCaptionButton(
-        onClick = {
-            (window as? Frame)?.let {
-                it.extendedState = it.extendedState or Frame.ICONIFIED
+            // Maximize/Restore button (only if resizable)
+            val frame = window as? Frame
+            if (frame != null && frame.isResizable) {
+                if (state.isMaximized) {
+                    WindowsCaptionButton(
+                        onClick = { frame.extendedState = Frame.NORMAL },
+                        state = state,
+                        style = style,
+                        icon = if (state.isActive) icons.restore else icons.restoreInactive,
+                        contentDescription = "Restore",
+                    )
+                } else {
+                    WindowsCaptionButton(
+                        onClick = { frame.extendedState = Frame.MAXIMIZED_BOTH },
+                        state = state,
+                        style = style,
+                        icon = if (state.isActive) icons.maximize else icons.maximizeInactive,
+                        contentDescription = "Maximize",
+                    )
+                }
             }
-        },
-        state = state,
-        style = style,
-        icon = if (state.isActive) icons.minimize else icons.minimizeInactive,
-        contentDescription = "Minimize",
-    )
+        }
+
+        // Minimize button
+        WindowsCaptionButton(
+            onClick = {
+                (window as? Frame)?.let {
+                    it.extendedState = it.extendedState or Frame.ICONIFIED
+                }
+            },
+            state = state,
+            style = style,
+            icon = if (state.isActive) icons.minimize else icons.minimizeInactive,
+            contentDescription = "Minimize",
+        )
+    }
 }
 
 /**
@@ -114,18 +131,20 @@ fun TitleBarScope.WindowsDialogCloseButton(
     state: DecoratedDialogState,
     style: TitleBarStyle,
 ) {
-    val icons = windowsTitleBarIcons()
-    val windowState = state.toDecoratedWindowState()
+    CompositionLocalProvider(LocalLayoutDirection provides LocalControlButtonsDirection.current) {
+        val icons = windowsTitleBarIcons()
+        val windowState = state.toDecoratedWindowState()
 
-    WindowsCaptionButton(
-        onClick = { window.dispatchEvent(WindowEvent(window, WindowEvent.WINDOW_CLOSING)) },
-        state = windowState,
-        style = style,
-        icon = if (windowState.isActive) icons.close else icons.closeInactive,
-        iconHover = icons.closeHover,
-        contentDescription = "Close",
-        isCloseButton = true,
-    )
+        WindowsCaptionButton(
+            onClick = { window.dispatchEvent(WindowEvent(window, WindowEvent.WINDOW_CLOSING)) },
+            state = windowState,
+            style = style,
+            icon = if (windowState.isActive) icons.close else icons.closeInactive,
+            iconHover = icons.closeHover,
+            contentDescription = "Close",
+            isCloseButton = true,
+        )
+    }
 }
 
 @OptIn(ExperimentalComposeUiApi::class)

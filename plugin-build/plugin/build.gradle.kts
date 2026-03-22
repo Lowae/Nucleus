@@ -21,6 +21,7 @@ dependencies {
     implementation(libs.download.task)
     implementation(libs.kotlin.poet)
     implementation(libs.batik.transcoder)
+    implementation(libs.thumbnailator)
 
     testImplementation(libs.junit)
 }
@@ -85,7 +86,7 @@ tasks.named("check").configure {
     )
 }
 
-tasks.create("setupPluginUploadFromEnvironment") {
+tasks.register("setupPluginUploadFromEnvironment") {
     doLast {
         val key = System.getenv("GRADLE_PUBLISH_KEY")
         val secret = System.getenv("GRADLE_PUBLISH_SECRET")

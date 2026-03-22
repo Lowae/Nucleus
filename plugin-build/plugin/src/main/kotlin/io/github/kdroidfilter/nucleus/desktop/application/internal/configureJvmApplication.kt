@@ -12,6 +12,7 @@ import io.github.kdroidfilter.nucleus.desktop.application.tasks.AbstractCheckNat
 import io.github.kdroidfilter.nucleus.desktop.application.tasks.AbstractElectronBuilderPackageTask
 import io.github.kdroidfilter.nucleus.desktop.application.tasks.AbstractExtractNativeLibsTask
 import io.github.kdroidfilter.nucleus.desktop.application.tasks.AbstractGenerateAotCacheTask
+import io.github.kdroidfilter.nucleus.desktop.application.tasks.AbstractGenerateAppPropertiesTask
 import io.github.kdroidfilter.nucleus.desktop.application.tasks.AbstractJLinkTask
 import io.github.kdroidfilter.nucleus.desktop.application.tasks.AbstractJPackageTask
 import io.github.kdroidfilter.nucleus.desktop.application.tasks.AbstractNotarizationTask
@@ -22,11 +23,13 @@ import io.github.kdroidfilter.nucleus.desktop.application.tasks.AbstractStripNat
 import io.github.kdroidfilter.nucleus.desktop.application.tasks.AbstractSuggestModulesTask
 import io.github.kdroidfilter.nucleus.desktop.tasks.AbstractJarsFlattenTask
 import io.github.kdroidfilter.nucleus.desktop.tasks.AbstractUnpackDefaultApplicationResourcesTask
+import io.github.kdroidfilter.nucleus.internal.KOTLIN_JVM_PLUGIN_ID
+import io.github.kdroidfilter.nucleus.internal.KOTLIN_MPP_PLUGIN_ID
+import io.github.kdroidfilter.nucleus.internal.javaSourceSets
+import io.github.kdroidfilter.nucleus.internal.mppExt
 import io.github.kdroidfilter.nucleus.internal.utils.Arch
 import io.github.kdroidfilter.nucleus.internal.utils.OS
-import io.github.kdroidfilter.nucleus.internal.utils.currentArch
 import io.github.kdroidfilter.nucleus.internal.utils.currentOS
-import io.github.kdroidfilter.nucleus.internal.utils.currentTarget
 import io.github.kdroidfilter.nucleus.internal.utils.dependsOn
 import io.github.kdroidfilter.nucleus.internal.utils.detachedComposeGradleDependency
 import io.github.kdroidfilter.nucleus.internal.utils.detachedDependency
@@ -36,6 +39,7 @@ import io.github.kdroidfilter.nucleus.internal.utils.file
 import io.github.kdroidfilter.nucleus.internal.utils.ioFile
 import io.github.kdroidfilter.nucleus.internal.utils.ioFileOrNull
 import io.github.kdroidfilter.nucleus.internal.utils.javaExecutable
+import io.github.kdroidfilter.nucleus.internal.utils.jdkArch
 import io.github.kdroidfilter.nucleus.internal.utils.provider
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DuplicatesStrategy
@@ -95,6 +99,44 @@ private fun JvmApplicationContext.configureCommonJvmDesktopTasks(): CommonJvmDes
             taskNameObject = "DefaultComposeDesktopJvmApplicationResources",
         ) {}
 
+    // Generate nucleus/nucleus-app.properties into a resource directory
+    val generateAppProperties =
+        tasks.register<AbstractGenerateAppPropertiesTask>(
+            taskNameAction = "generate",
+            taskNameObject = "appProperties",
+        ) {
+            appId.set(resolvedAppIdProvider())
+            app.nativeDistributions.packageVersion?.let { appVersion.set(it) }
+            app.nativeDistributions.vendor?.let { appVendor.set(it) }
+            app.nativeDistributions.description?.let { appDescription.set(it) }
+            // Store the computed StartupWMClass so graalvm-runtime can use it as
+            // WM_CLASS and GNOME can match the window to the .desktop file icon.
+            val wmClass =
+                app.nativeDistributions.linux.startupWMClass
+                    ?.takeIf { it.isNotBlank() }
+                    ?: app.mainClass?.replace('.', '-')
+            wmClass?.let { startupWmClass.set(it) }
+            outputDir.set(appTmpDir.dir("app-properties"))
+        }
+
+    // Add the generated properties directory to the resource source set
+    val appPropertiesOutputDir = generateAppProperties.flatMap { it.outputDir }
+    if (project.plugins.hasPlugin(KOTLIN_MPP_PLUGIN_ID)) {
+        project.mppExt.targets.all { target ->
+            if (target is org.jetbrains.kotlin.gradle.targets.jvm.KotlinJvmTarget) {
+                target.compilations
+                    .getByName("main")
+                    .defaultSourceSet.resources
+                    .srcDir(appPropertiesOutputDir)
+            }
+        }
+    } else if (project.plugins.hasPlugin(KOTLIN_JVM_PLUGIN_ID)) {
+        project.javaSourceSets
+            .getByName("main")
+            .resources
+            .srcDir(appPropertiesOutputDir)
+    }
+
     val checkRuntime =
         tasks.register<AbstractCheckNativeDistributionRuntime>(
             taskNameAction = "check",
@@ -134,7 +176,7 @@ private fun JvmApplicationContext.configureCommonJvmDesktopTasks(): CommonJvmDes
                     OS.MacOS -> "macos"
                 }
             val archName =
-                when (currentArch) {
+                when (targetArch) {
                     Arch.X64 -> "x64"
                     Arch.Arm64 -> "arm64"
                 }
@@ -166,7 +208,7 @@ private fun JvmApplicationContext.configureCommonJvmDesktopTasks(): CommonJvmDes
             if (appResourcesRootDir.isPresent) {
                 from(appResourcesRootDir.dir("common"))
                 from(appResourcesRootDir.dir(currentOS.id))
-                from(appResourcesRootDir.dir(currentTarget.id))
+                from(appResourcesRootDir.dir(targetTarget.id))
             }
 
             into(jvmTmpDirForTask())
@@ -183,7 +225,7 @@ private fun JvmApplicationContext.configureCommonJvmDesktopTasks(): CommonJvmDes
                 if (appResourcesRootDir.isPresent) {
                     from(appResourcesRootDir.dir("common"))
                     from(appResourcesRootDir.dir(currentOS.id))
-                    from(appResourcesRootDir.dir(currentTarget.id))
+                    from(appResourcesRootDir.dir(targetTarget.id))
                 }
 
                 dependsOn(extractNativeLibs)
@@ -654,7 +696,8 @@ private fun JvmApplicationContext.configurePackageTask(
     packageTask.launcherJvmArgs.set(
         provider {
             val executableTypeArg = "-D$APP_EXECUTABLE_TYPE=${packageTask.targetFormat.executableTypeValue}"
-            var args = defaultJvmArgs + executableTypeArg + app.jvmArgs
+            val appIdArg = "-D$APP_ID=${resolvedAppIdProvider().get()}"
+            var args = defaultJvmArgs + executableTypeArg + appIdArg + app.jvmArgs
             val splash = app.nativeDistributions.splashImage
             if (splash != null) {
                 args = args + "-splash:\$APPDIR/resources/$splash"
@@ -708,12 +751,14 @@ private fun JvmApplicationContext.configureElectronBuilderPackageTask(
     packageTask.appxSquare150x150Logo.set(app.nativeDistributions.windows.appx.square150x150Logo)
     packageTask.appxWide310x150Logo.set(app.nativeDistributions.windows.appx.wide310x150Logo)
     packageTask.distributions = app.nativeDistributions
+    packageTask.targetArch.set(app.javaHomeProvider.map { jdkArch(java.io.File(it)).id })
 
     if (currentOS == OS.MacOS) {
         val mac = app.nativeDistributions.macOS
         packageTask.nonValidatedMacSigningSettings = mac.signing
         packageTask.nonValidatedMacBundleID.set(mac.bundleID)
-        packageTask.macAppStore.set(mac.appStore)
+        // PKG is always treated as App Store — ignore the deprecated user setting for store formats.
+        packageTask.macAppStore.set(packageTask.targetFormat.isStoreFormat)
         val sandboxed = packageTask.targetFormat.isStoreFormat
         val defaultAppEntitlements =
             if (sandboxed) {
@@ -741,8 +786,7 @@ internal fun JvmApplicationContext.configureCommonNotarizationSettings(notarizat
     notarizationTask.nonValidatedNotarizationSettings = notarization
     notarizationTask.onlyIf {
         val configured =
-            notarization != null &&
-                !notarization.appleID.orNull.isNullOrEmpty() &&
+            !notarization.appleID.orNull.isNullOrEmpty() &&
                 !notarization.password.orNull.isNullOrEmpty() &&
                 !notarization.teamID.orNull.isNullOrEmpty()
         if (!configured) {
@@ -793,7 +837,11 @@ internal fun JvmApplicationContext.configurePlatformSettings(
                         }
                     },
                 )
-                packageTask.macAppStore.set(mac.appStore)
+                // The jpackage task always builds a RawAppImage, so targetFormat.isStoreFormat
+                // is always false. Use the sandboxed flag instead: sandboxed distributable feeds
+                // store formats (PKG) and must pass --mac-app-store to jpackage so it searches
+                // for the correct certificate type ("3rd Party Mac Developer Application").
+                packageTask.macAppStore.set(sandboxed)
                 packageTask.macAppCategory.set(mac.appCategory)
                 packageTask.macMinimumSystemVersion.set(mac.minimumSystemVersion)
                 val defaultAppEntitlements =
@@ -818,6 +866,7 @@ internal fun JvmApplicationContext.configurePlatformSettings(
                 packageTask.nonValidatedMacBundleID.set(mac.bundleID)
                 packageTask.macProvisioningProfile.set(mac.provisioningProfile)
                 packageTask.macRuntimeProvisioningProfile.set(mac.runtimeProvisioningProfile)
+                packageTask.macOsSdkVersion.set(mac.macOsSdkVersion)
                 packageTask.macExtraPlistKeysRawXml.set(mac.infoPlistSettings.extraKeysRawXml)
                 packageTask.nonValidatedMacSigningSettings = app.nativeDistributions.macOS.signing
                 packageTask.iconFile.set(mac.iconFile.orElse(defaultResources.get { macIcon }))
@@ -838,10 +887,46 @@ private fun JvmApplicationContext.configureRunTask(
 
     exec.mainClass.set(app.mainClass)
     exec.executable(javaExecutable(app.javaHome))
+    if (currentOS == OS.MacOS) {
+        val sdkVersion = app.nativeDistributions.macOS.macOsSdkVersion
+        if (sdkVersion != null) {
+            val javaHome = app.javaHome
+            // Run via a patched copy of the java binary (like ComposeDarwinUi).
+            // We can't change JavaExec.executable or javaLauncher due to Gradle 9.4
+            // finalization/validation, so we run the process manually in doFirst
+            // and skip the JavaExec action.
+            exec.doFirst {
+                val je = it as JavaExec
+                val patchedJava = getOrCreatePatchedJvm(javaHome, sdkVersion, je.logger)
+                val cmd = mutableListOf(patchedJava)
+                je.jvmArgs?.let { cmd.addAll(it) }
+                cmd.add("-cp")
+                cmd.add(je.classpath.asPath)
+                cmd.add(je.mainClass.get())
+                je.args?.let { cmd.addAll(it) }
+                val exitCode =
+                    ProcessBuilder(cmd)
+                        .inheritIO()
+                        .start()
+                        .waitFor()
+                if (exitCode != 0) {
+                    throw org.gradle.api.GradleException(
+                        "Process finished with non-zero exit value $exitCode",
+                    )
+                }
+                // Skip the JavaExec action — we already ran the process above.
+                // This is necessary because Gradle 9.4 finalizes javaLauncher before
+                // execution, preventing us from changing executable to the patched path.
+                throw org.gradle.api.tasks
+                    .StopExecutionException()
+            }
+        }
+    }
     exec.jvmArgs =
         arrayListOf<String>().apply {
             addAll(defaultJvmArgs)
             add("-D$APP_EXECUTABLE_TYPE=$EXECUTABLE_TYPE_DEV")
+            add("-D$APP_ID=${resolvedAppIdProvider().get()}")
 
             if (currentOS == OS.MacOS) {
                 val file = app.nativeDistributions.macOS.iconFile.ioFileOrNull
@@ -925,7 +1010,7 @@ private fun JvmApplicationContext.configurePackageUberJarForCurrentOS(
     app.mainClass?.let { jar.manifest.attributes["Main-Class"] = it }
     jar.manifest.attributes["Multi-Release"] = "true"
     jar.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    jar.archiveAppendix.set(currentTarget.id)
+    jar.archiveAppendix.set(targetTarget.id)
     jar.archiveBaseName.set(packageNameProvider)
     jar.archiveVersion.set(packageVersionFor(TargetFormat.RawAppImage))
     jar.archiveClassifier.set(buildType.classifier)
@@ -957,3 +1042,98 @@ private fun sandboxingJvmArgs(resourcesPath: String): List<String> =
         "-Djna.boot.library.path=$resourcesPath",
         "-Djna.library.path=$resourcesPath",
     )
+
+/**
+ * Returns the path to a patched copy of the JVM java binary with
+ * LC_BUILD_VERSION set to the given SDK version. The patched binary is cached
+ * in ~/Library/Caches/nucleus/patched-jvm/ and invalidated by SHA-256 hash.
+ * Mirrors JAVA_HOME/lib via symlink for @loader_path rpath resolution.
+ */
+private fun getOrCreatePatchedJvm(
+    javaHome: String,
+    sdkVersion: String,
+    logger: org.gradle.api.logging.Logger,
+): String {
+    val javaBin = java.io.File(javaHome, "bin/java")
+    if (!javaBin.exists()) return javaBin.absolutePath
+
+    val vtool = java.io.File("/usr/bin/vtool")
+    if (!vtool.exists()) {
+        logger.warn(
+            "vtool not found at /usr/bin/vtool — skipping macOS SDK version patch. " +
+                "Install Xcode Command Line Tools to enable Liquid Glass.",
+        )
+        return javaBin.absolutePath
+    }
+
+    val cacheDir =
+        java.io.File(System.getProperty("user.home"), "Library/Caches/nucleus/patched-jvm")
+    val patched = java.io.File(cacheDir, "bin/java")
+    val stampFile = java.io.File(cacheDir, ".source_hash")
+
+    // Include sdkVersion in the cache key so changing the DSL property invalidates the cache
+    val sourceHash =
+        javaBin.inputStream().use { stream ->
+            java.security.MessageDigest.getInstance("SHA-256").let { md ->
+                md.update(sdkVersion.toByteArray())
+                val buf = ByteArray(8192)
+                var n: Int
+                while (stream.read(buf).also { n = it } != -1) md.update(buf, 0, n)
+                md.digest().joinToString("") { b -> "%02x".format(b) }
+            }
+        }
+    val cachedHash = if (stampFile.exists()) stampFile.readText().trim() else ""
+
+    if (patched.exists() && sourceHash == cachedHash) {
+        return patched.absolutePath
+    }
+
+    logger.lifecycle("Patching JVM binary for macOS SDK $sdkVersion (Liquid Glass)...")
+    cacheDir.resolve("bin").mkdirs()
+
+    // Mirror JAVA_HOME/lib so @loader_path/../lib resolves correctly
+    val libLink = cacheDir.resolve("lib")
+    if (libLink.exists()) libLink.delete()
+    java.nio.file.Files.createSymbolicLink(
+        libLink.toPath(),
+        java.io.File(javaHome, "lib").toPath(),
+    )
+
+    javaBin.copyTo(patched, overwrite = true)
+    patched.setExecutable(true)
+
+    ProcessBuilder("codesign", "--remove-signature", patched.absolutePath)
+        .redirectErrorStream(true)
+        .start()
+        .waitFor()
+    val vtoolExit =
+        ProcessBuilder(
+            "vtool",
+            "-set-build-version",
+            "macos",
+            "11.0",
+            sdkVersion,
+            "-tool",
+            "ld",
+            "0.0",
+            "-replace",
+            "-output",
+            patched.absolutePath,
+            patched.absolutePath,
+        ).redirectErrorStream(true)
+            .start()
+            .waitFor()
+    if (vtoolExit != 0) {
+        logger.warn("vtool exited with code $vtoolExit — Liquid Glass patch may have failed")
+        return javaBin.absolutePath
+    }
+    // Ad-hoc re-sign the patched copy (required for macOS to allow execution)
+    ProcessBuilder("codesign", "-s", "-", "-f", patched.absolutePath)
+        .redirectErrorStream(true)
+        .start()
+        .waitFor()
+
+    stampFile.writeText(sourceHash)
+    logger.lifecycle("Patched binary cached at ${patched.absolutePath}")
+    return patched.absolutePath
+}

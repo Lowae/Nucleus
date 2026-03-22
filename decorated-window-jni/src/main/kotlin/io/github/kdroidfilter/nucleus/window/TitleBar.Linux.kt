@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.currentCompositionLocalContext
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -26,17 +27,20 @@ internal fun DecoratedWindowScope.LinuxTitleBar(
     modifier: Modifier = Modifier,
     gradientStartColor: Color = Color.Unspecified,
     style: TitleBarStyle,
+    controlButtonsDirection: ControlButtonsDirection = ControlButtonsDirection.Auto,
+    backgroundContent: @Composable () -> Unit = {},
     content: @Composable TitleBarScope.(DecoratedWindowState) -> Unit = {},
 ) {
     if (JniLinuxWindowBridge.isLoaded) {
-        NativeLinuxTitleBar(modifier, gradientStartColor, style, content)
+        NativeLinuxTitleBar(modifier, gradientStartColor, style, controlButtonsDirection, backgroundContent, content)
     } else {
-        FallbackLinuxTitleBar(modifier, gradientStartColor, style, content)
+        FallbackLinuxTitleBar(modifier, gradientStartColor, style, controlButtonsDirection, backgroundContent, content)
     }
 }
 
 // Native title bar: uses JNI to send _NET_WM_MOVERESIZE for native WM drag.
 // Double-click to maximize is handled in Compose.
+// Supports fullscreen sliding overlay via newFullscreenControls modifier.
 @OptIn(ExperimentalComposeUiApi::class)
 @Suppress("FunctionNaming")
 @Composable
@@ -44,16 +48,52 @@ private fun DecoratedWindowScope.NativeLinuxTitleBar(
     modifier: Modifier,
     gradientStartColor: Color,
     style: TitleBarStyle,
+    controlButtonsDirection: ControlButtonsDirection,
+    backgroundContent: @Composable () -> Unit,
     content: @Composable TitleBarScope.(DecoratedWindowState) -> Unit,
 ) {
     val linuxStyle = createLinuxTitleBarStyle(style)
     val viewConfig = LocalViewConfiguration.current
     var lastPressTime = 0L
 
+    val isNativeFullscreen = LocalNativeFullscreen.current
+    val onExitFullscreen = LocalExitFullscreen.current
+    val useNewFullscreenControls = modifier.hasNewFullscreenControls()
+
+    // ── Fullscreen with newFullscreenControls: sliding overlay ──
+    if (isNativeFullscreen && useNewFullscreenControls) {
+        val holder = LocalFullscreenTitleBarHolder.current
+        if (holder != null) {
+            holder.compositionLocalContext = currentCompositionLocalContext
+            holder.titleBarHeight = linuxStyle.metrics.height
+            holder.content = {
+                TitleBarImpl(
+                    modifier = modifier,
+                    gradientStartColor = gradientStartColor,
+                    style = linuxStyle,
+                    controlButtonsDirection = controlButtonsDirection.resolve(),
+                    applyTitleBar = { _, _ -> PaddingValues(0.dp) },
+                ) { currentState ->
+                    WindowControlArea(
+                        window = window,
+                        state = currentState,
+                        style = linuxStyle,
+                        isFullscreen = true,
+                        onExitFullscreen = onExitFullscreen,
+                    )
+                    content(currentState)
+                }
+            }
+        }
+        return
+    }
+
+    // ── Normal title bar (or fullscreen without newFullscreenControls) ──
     TitleBarImpl(
         modifier = modifier,
         gradientStartColor = gradientStartColor,
         style = linuxStyle,
+        controlButtonsDirection = controlButtonsDirection.resolve(),
         applyTitleBar = { _, _ ->
             if (LinuxDesktopEnvironment.Current == LinuxDesktopEnvironment.KDE) {
                 PaddingValues(end = 4.dp)
@@ -62,6 +102,7 @@ private fun DecoratedWindowScope.NativeLinuxTitleBar(
             }
         },
         backgroundContent = {
+            backgroundContent()
             Spacer(
                 modifier =
                     Modifier
@@ -98,7 +139,13 @@ private fun DecoratedWindowScope.NativeLinuxTitleBar(
             )
         },
     ) { currentState ->
-        WindowControlArea(window, currentState, linuxStyle)
+        WindowControlArea(
+            window = window,
+            state = currentState,
+            style = linuxStyle,
+            isFullscreen = isNativeFullscreen,
+            onExitFullscreen = onExitFullscreen,
+        )
         content(currentState)
     }
 }
@@ -111,6 +158,8 @@ private fun DecoratedWindowScope.FallbackLinuxTitleBar(
     modifier: Modifier,
     gradientStartColor: Color,
     style: TitleBarStyle,
+    controlButtonsDirection: ControlButtonsDirection,
+    backgroundContent: @Composable () -> Unit,
     content: @Composable TitleBarScope.(DecoratedWindowState) -> Unit,
 ) {
     val linuxStyle = createLinuxTitleBarStyle(style)
@@ -139,6 +188,7 @@ private fun DecoratedWindowScope.FallbackLinuxTitleBar(
             },
         gradientStartColor = gradientStartColor,
         style = linuxStyle,
+        controlButtonsDirection = controlButtonsDirection.resolve(),
         applyTitleBar = { _, _ ->
             if (LinuxDesktopEnvironment.Current == LinuxDesktopEnvironment.KDE) {
                 PaddingValues(end = 4.dp)
@@ -146,8 +196,8 @@ private fun DecoratedWindowScope.FallbackLinuxTitleBar(
                 PaddingValues(0.dp)
             }
         },
-        // Compose-based drag replaces JBR.getWindowMove()
         backgroundContent = {
+            backgroundContent()
             Spacer(modifier = Modifier.fillMaxSize().windowDragHandler(window))
         },
     ) { currentState ->

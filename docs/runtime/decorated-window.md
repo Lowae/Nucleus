@@ -1,11 +1,15 @@
 # Decorated Window
 
-Compose for Desktop does not allow drawing custom content in the title bar while keeping native window controls and native behavior (drag, resize, double-click maximize). You must choose between a native title bar you cannot customize, or a fully undecorated window where you reimplement everything from scratch.
+Compose for Desktop does not natively expose a way to draw custom content in the title bar while keeping native window controls and behavior (drag, resize, double-click maximize). On macOS, the underlying Swing layer does offer `JRootPane` client properties (such as `apple.awt.fullWindowContent` and `apple.awt.transparentTitleBar`) that let you extend Compose content into the title bar area while keeping native traffic lights — but this is a Swing-level mechanism, not a Compose API, and it does not give you a composable layout model for the title bar. On Windows and Linux there is no equivalent — your only option is a fully undecorated window where you reimplement everything from scratch.
 
-The decorated window modules bridge this gap. They are a fork of [Jewel](https://github.com/JetBrains/intellij-community/tree/master/platform/jewel)'s decorated window, **without any dependency on Jewel itself**. Key differences from Jewel:
+The decorated window modules bridge this gap. They are **completely design-system agnostic** — no dependency on Jewel, no dependency on Material 3. You wire in whatever color tokens your app uses (Material 3, Jewel, your own design system, or a plain `Color` literal).
+
+Optional convenience modules exist for automatic color wiring: [`decorated-window-jewel`](decorated-window-jewel.md) reads `JewelTheme`, [`decorated-window-material2`](decorated-window-material2.md) reads `MaterialTheme.colors`, and [`decorated-window-material3`](decorated-window-material3.md) reads `MaterialTheme.colorScheme` — but they are separate artifacts and are not required by the base modules.
+
+The implementation was originally inspired by [Jewel](https://github.com/JetBrains/intellij-community/tree/master/platform/jewel)'s decorated window. Key divergences from Jewel's own implementation:
 
 - **No JNA** — all native calls use JNI only, removing the JNA dependency entirely
-- **Design-system agnostic** — no Material dependency; easily map any theme (Material 3, Jewel, your own) to its styling tokens
+- **No Jewel dependency** — the base modules have zero runtime dependency on Jewel
 - **`DecoratedDialog`** — custom title bar for dialog windows, which Jewel does not provide
 - **Reworked Linux rendering** — the entire Linux experience has been rebuilt from the ground up to look as native as possible, even though everything is drawn with Compose: platform-accurate GNOME Adwaita and KDE Breeze window controls, proper window shape clipping, border styling, and full behavior emulation (drag, double-click maximize, focus-aware button states)
 
@@ -25,12 +29,11 @@ Both `decorated-window-jbr` and `decorated-window-jni` expose **the same public 
 
 Uses JetBrains' official `CustomTitleBar` API. This is the more **battle-tested** option, backed by the same code that powers IntelliJ IDEA and other JetBrains products. Requires JBR.
 
-However, there are a few known issues on **Windows**:
+However, there is a known issue on **Windows**:
 
 - The window **cannot open in maximized state** directly — you need to use a `LaunchedEffect` with a short delay after the window appears, then set `WindowPlacement.Maximized`
-- Title bar drag events are **occasionally missed**, causing the window to not follow the cursor during drag
 
-These are upstream JBR bugs, not Nucleus bugs. The module throws an `IllegalStateException` at startup if JBR is not detected.
+This is an upstream JBR bug, not a Nucleus bug. The module throws an `IllegalStateException` at startup if JBR is not detected.
 
 !!! tip
     When running via `./gradlew run`, Gradle uses the JDK configured in your toolchain. Make sure it is a JBR distribution if using this module.
@@ -40,6 +43,26 @@ These are upstream JBR bugs, not Nucleus bugs. The module throws an `IllegalStat
 Entirely implemented by Nucleus using JNI native libraries on all platforms. None of the JBR bugs mentioned above are present — window maximization and drag work reliably.
 
 This module does not depend on JBR, making it compatible with **any JVM** (OpenJDK, GraalVM Native Image, etc.). It was specifically designed for use cases where JBR is not available, such as GraalVM native-image builds. On Linux, pair it with [`linux-hidpi`](linux-hidpi.md) for correct HiDPI support.
+
+!!! info "macOS: Liquid Glass and Xcode 26 appearance"
+    Nucleus automatically patches the application launcher's `LC_BUILD_VERSION` to macOS SDK 26.0 via `vtool`, enabling Liquid Glass window decorations (larger traffic lights, rounded corners). This works with **any JDK** — a JDK compiled with Xcode 26 is no longer required. See [macOS 26 Window Appearance](../targets/macos.md#macos-26-window-appearance-liquid-glass) for details and configuration options.
+
+!!! note "Windows: no white background flash during resize"
+    On Windows, Skiko's rendering pipeline clears the DirectX canvas to white before each frame. When the window is resized larger, the newly exposed pixels remain white for one frame — producing a visible white flash. The JNI module eliminates this by adjusting Skiko's clear color to transparent for dark themes (rendered as opaque black on the DirectX surface), so the flash is invisible against a dark background. It also synchronizes the DWM caption and border colors (`DWMWA_CAPTION_COLOR`, `DWMWA_BORDER_COLOR`, `DWMWA_USE_IMMERSIVE_DARK_MODE`) with the title bar color for consistent Windows 11 window chrome styling.
+
+    This fix is **not present** in `decorated-window-jbr`.
+
+!!! note "macOS: smooth live resize with synchronous Metal presentation"
+    On macOS, resizing a window triggers a modal tracking loop on the main thread. By default, Skiko's Metal layer (`CAMetalLayer`) presents frames asynchronously — which means macOS stretches the stale frame content to fill the new window size, producing a visible freeze/lag during resize.
+
+    The JNI module fixes this by toggling `CAMetalLayer.presentsWithTransaction` during live resize:
+
+    - When a resize starts (`viewWillStartLiveResize`), the module enables synchronous presentation on all Metal layers in the window hierarchy. This forces each rendered frame to be committed to the compositor before the next resize step, so the window content follows the resize in real time.
+    - When the resize ends (`viewDidEndLiveResize`), the module restores asynchronous presentation for optimal rendering performance during normal use.
+
+    This matches the behavior of native macOS Metal applications (Safari, Finder, etc.). The trade-off is that windows with heavy Compose layouts may see a lower frame rate during resize (since each frame blocks until presented), but the content will always track the window size instead of freezing.
+
+    This fix is **not present** in `decorated-window-jbr`.
 
 !!! warning "Less battle-tested"
     While the JNI module has no known bugs, it has not been as widely tested as the JBR implementation. Use it with appropriate caution in production, and report any issues you encounter.
@@ -58,16 +81,19 @@ dependencies {
 }
 ```
 
-If you use Material 3, add the companion module:
+**Optionally**, if you use a supported design system and want automatic color wiring, add the companion module matching your theme. This is **not required** for the base decorated window to work.
 
 ```kotlin
 dependencies {
-    implementation("io.github.kdroidfilter:nucleus.decorated-window-material:<version>")
+    // Optional — pick one depending on your design system
+    implementation("io.github.kdroidfilter:nucleus.decorated-window-jewel:<version>")    // Jewel (IntelliJ)
+    implementation("io.github.kdroidfilter:nucleus.decorated-window-material2:<version>") // Material 2
+    implementation("io.github.kdroidfilter:nucleus.decorated-window-material3:<version>") // Material 3
 }
 ```
 
 !!! note
-    See [`decorated-window-material`](decorated-window-material.md) for automatic `MaterialTheme.colorScheme` wiring.
+    See [`decorated-window-jewel`](decorated-window-jewel.md), [`decorated-window-material2`](decorated-window-material2.md), or [`decorated-window-material3`](decorated-window-material3.md) for details on the design system wrappers. If you use a custom theme, skip these modules and map your colors manually as shown in the [Styling](#styling) section below.
 
 ## Quick Start
 
@@ -110,34 +136,79 @@ fun main() = application {
 
     ![KDE Decorated Window](../assets/KdeDecoratedWindow.png)
 
-## Platform Behavior
+## Platform Comparison
 
-### JBR module (`decorated-window-jbr`)
+The following tables compare a standard Compose `Window()`, the JBR module (`decorated-window-jbr`), and the JNI module (`decorated-window-jni`) across all three platforms.
 
-|  | macOS | Windows | Linux |
-|---|-------|---------|-------|
-| Decoration | JBR `CustomTitleBar` | JBR `CustomTitleBar` | Fully undecorated |
-| Window controls | Native traffic lights | Native min/max/close | Compose `WindowControlArea` (SVG icons) |
-| Drag | JBR hit-test | JBR `forceHitTest` | `JBR.getWindowMove().startMovingTogetherWithMouse()` |
-| Double-click maximize | Native | Native | Manual detection |
-| RTL support | No (requires [custom JBR](../targets/macos.md#jvm-based-applications) for hot-swap) | Yes (no hot-swap, restart required) | Yes (hot-swap) |
+### macOS
 
-### JNI module (`decorated-window-jni`)
+| Feature | Compose `Window()` | `decorated-window-jbr` | `decorated-window-jni` |
+|---|---|---|---|
+| Custom title bar content | No | Yes (JBR `CustomTitleBar`) | Yes (JNI native bridge) |
+| Window controls | Native traffic lights | Native traffic lights | Native traffic lights |
+| Title bar drag | Native | JBR hit-test | `nativeStartWindowDrag()` via JNI |
+| Double-click maximize | Native | Native (via JBR `CustomTitleBar`) | Native via JNI |
+| Window snapping / tiling | Native | Native | Native (swizzled `_adjustWindowToScreen`) |
+| Resize flash / freeze | Image freezes during resize | No freeze (JBR handles it) | **Fixed** — synchronous Metal presentation via `presentsWithTransaction` |
+| 26pt corner radius | No | No | Yes (`macOSLargeCornerRadius()`) |
+| Fullscreen controls | No custom title bar | macOS native (`apple.awt.newFullScreenControls`) | Sliding overlay (`newFullscreenControls()`) |
+| RTL support | No custom title bar | No (requires [custom JBR](../targets/macos.md#jvm-based-applications)) | Yes (live hot-swap, traffic lights move to right) |
+| JDK requirement | Any | JBR only | Any (requires Xcode 26-compiled JDK for native features) |
+| Fallback (no native lib) | N/A | N/A | AWT client properties (no custom positioning) |
 
-|  | macOS | Windows | Linux |
-|---|-------|---------|-------|
-| Decoration | JNI native bridge | JNI DLL (WndProc subclass) | JNI .so (`_NET_WM_MOVERESIZE`) |
-| Window controls | Native traffic lights | Compose `WindowsWindowControlArea` (SVG icons) | Compose `WindowControlArea` (SVG icons) |
-| Drag | `nativeStartWindowDrag()` via JNI | Native DLL or Compose fallback | `_NET_WM_MOVERESIZE` or Compose fallback |
-| Double-click maximize | Native via JNI | Native or Compose detection | Compose detection |
-| Fallback (no native lib) | AWT client properties | Compose `windowDragHandler()` | Compose `windowDragHandler()` |
-| RTL support | Yes (live hot-swap) | Yes (live hot-swap) | Yes (hot-swap) |
+### Windows
 
-On **macOS**, both modules preserve the native traffic lights.
+| Feature | Compose `Window()` | `decorated-window-jbr` | `decorated-window-jni` |
+|---|---|---|---|
+| Custom title bar content | No | Yes (JBR `CustomTitleBar`) | Yes (JNI DLL, WndProc subclass) |
+| Window controls | Native | Native min/max/close | Compose-drawn (SVG icons, Windows style) |
+| Title bar drag | Native | JBR `forceHitTest` + `clientRegion` | Native DLL or Compose fallback |
+| Double-click maximize | Native | Native (via JBR `CustomTitleBar`) | Compose detection |
+| Window snapping / tiling | Native | Native | Native (via `WM_NCLBUTTONDOWN` + `HTCAPTION`) |
+| Resize white flash | White flash on dark themes | White flash on dark themes | **Fixed** — `WM_ERASEBKGND` fill + `SWP_NOCOPYBITS` + DWM color sync |
+| Open in maximized state | Works | Broken (requires `LaunchedEffect` workaround) | Works |
+| Drag reliability | Native | Reliable (`clientRegion` hit-test) | Reliable |
+| True fullscreen | Broken (doesn't cover taskbar) | Broken (doesn't cover taskbar) | **Fixed** — native Win32 fullscreen (`newFullscreenControls()`) |
+| Fullscreen sliding title bar | No | No | Yes (`newFullscreenControls()`) |
+| DWM dark mode sync | No | No | Yes (`DWMWA_USE_IMMERSIVE_DARK_MODE`, caption/border color) |
+| RTL support | No custom title bar | Yes (no hot-swap, restart required) | Yes (live hot-swap) |
+| JDK requirement | Any | JBR only | Any |
+| Fallback (no native lib) | N/A | N/A | Compose `windowDragHandler()` (no WndProc subclass) |
 
-On **Windows**, the JBR module uses the native min/max/close buttons, while the JNI module draws its own window controls with Compose (SVG icons matching the Windows style).
+### Linux
 
-On **Linux**, the window is fully undecorated in both modules. They render their own close/minimize/maximize buttons using SVG icons adapted to the desktop environment (GNOME Adwaita or KDE Breeze). The window shape is also clipped to rounded corners to match the native look.
+| Feature | Compose `Window()` | `decorated-window-jbr` | `decorated-window-jni` |
+|---|---|---|---|
+| Custom title bar content | No | Yes (fully undecorated) | Yes (fully undecorated) |
+| Window controls | WM-provided | Compose `WindowControlArea` (SVG) | Compose `WindowControlArea` (SVG) |
+| Desktop environment styling | WM-provided | GNOME Adwaita / KDE Breeze icons | GNOME Adwaita / KDE Breeze icons |
+| Window shape | WM-provided | Rounded corners (GNOME 12dp, KDE 5dp top only) | Rounded corners (GNOME 12dp, KDE 5dp top only) |
+| Title bar drag | WM-provided | `JBR.getWindowMove()` | `_NET_WM_MOVERESIZE` via JNI or Compose fallback |
+| Double-click maximize | WM-provided | Compose detection | Compose detection |
+| True fullscreen | WM-provided | Compose `WindowPlacement.Fullscreen` | Native `_NET_WM_STATE_FULLSCREEN` via JNI |
+| Fullscreen sliding title bar | No | No | Yes (`newFullscreenControls()`) |
+| RTL support | No custom title bar | Yes (hot-swap) | Yes (hot-swap) |
+| JDK requirement | Any | JBR only | Any |
+| Fallback (no native lib) | N/A | N/A | Compose `windowDragHandler()` |
+
+### Summary
+
+| Capability | Compose `Window()` | JBR | JNI |
+|---|:---:|:---:|:---:|
+| Custom title bar | | ✅ | ✅ |
+| Works on any JDK | ✅ | | ✅ |
+| GraalVM native-image | ✅ | | ✅ |
+| No resize artifacts (macOS) | | ✅ | ✅ |
+| No resize artifacts (Windows) | | | ✅ |
+| True fullscreen (Windows) | | | ✅ |
+| Native fullscreen (Linux) | | | ✅ |
+| DWM dark mode sync (Windows) | | | ✅ |
+| 26pt corner radius (macOS) | | | ✅ |
+| Fullscreen sliding title bar (all platforms) | | | ✅ |
+| macOS native fullscreen controls | | ✅ | ✅ |
+| RTL live hot-swap (all platforms) | | | ✅ |
+| Dialog centering on parent | | ✅ | ✅ |
+| Battle-tested | ✅ | ✅ | |
 
 ## Components
 
@@ -196,6 +267,13 @@ DecoratedDialog(
 }
 ```
 
+!!! note "Automatic centering on parent window (`decorated-window-jni` only)"
+    When `DecoratedDialog` is composed inside a `DecoratedWindow`, it is automatically positioned **centered on its parent window** — no extra code needed. This is handled by hooking into the AWT `windowOpened` event, which fires exactly when the native dialog window is first shown. At that point, Compose Desktop has already applied any `DialogState` position, so the centering override reliably lands at the right time.
+
+    If there is no parent window in the composition tree (for example, a dialog opened from a non-windowed context), the dialog falls back to being **centered on the screen** (`setLocationRelativeTo(null)`).
+
+    This behavior is **not present** in `decorated-window-jbr`.
+
 ### `TitleBar` / `DialogTitleBar`
 
 Platform-dispatched title bar composable. Provides a `TitleBarScope` with:
@@ -231,6 +309,69 @@ TitleBar { state ->
 ```
 
 Centered content is automatically shifted to avoid overlapping with start/end content.
+
+### `controlButtonsDirection` — Independent Button Placement
+
+By default, the window control buttons (close, minimize, maximize) follow the same layout direction as the title bar content. This means that in an RTL locale, both the content and the buttons mirror together.
+
+The `controlButtonsDirection` parameter lets you decouple the two: you can have RTL content in the title bar while keeping the control buttons on their conventional side, or vice versa.
+
+```kotlin
+TitleBar(
+    controlButtonsDirection = ControlButtonsDirection.Ltr,
+) { state ->
+    // Content follows LocalLayoutDirection (e.g. RTL for Arabic),
+    // but control buttons always stay on the right side (LTR trailing).
+    Text(title, modifier = Modifier.align(Alignment.CenterHorizontally))
+}
+```
+
+| Value | Behavior |
+|-------|----------|
+| `Auto` | Follows Compose `LocalLayoutDirection` — the previous default behavior. |
+| `System` | Follows the JVM platform locale (`java.util.Locale`). |
+| `Ltr` | Always places buttons as in a left-to-right layout (trailing = right side). |
+| `Rtl` | Always places buttons as in a right-to-left layout (trailing = left side). |
+
+The default is `Auto`, which preserves backward compatibility.
+
+This parameter is available on `TitleBar` (both JBR and JNI modules) and on `MaterialTitleBar`.
+
+On macOS, this controls the native traffic-light button position (via JBR `controls.rtl` or JNI `nativeSetRTL`). On Windows and Linux, it controls the placement of the Compose-rendered control buttons.
+
+### `Modifier.clientRegion()` — Interactive Title Bar Regions
+
+When you place interactive elements (buttons, dropdowns, etc.) inside a `TitleBar`, they need to receive mouse events instead of triggering window dragging. The `clientRegion` modifier registers a composable as an interactive area within the title bar, so the platform's hit-test system knows to treat it as a clickable region rather than a drag surface.
+
+This is particularly important with `decorated-window-jbr`, where the old pointer-event-based approach could occasionally miss drag events on Windows. The new `clientRegion` modifier uses AWT-level mouse listeners with precise coordinate-based hit testing, which is more reliable.
+
+```kotlin
+TitleBar { state ->
+    // This dropdown is marked as a client region — clicks go to
+    // the dropdown, not to the window drag handler.
+    Dropdown(
+        modifier = Modifier.align(Alignment.Start).clientRegion("main_menu"),
+        menuContent = { /* ... */ },
+    ) {
+        Text("File")
+    }
+
+    Text(title, modifier = Modifier.align(Alignment.CenterHorizontally))
+
+    // This icon button is also a client region.
+    IconButton(
+        onClick = { /* ... */ },
+        modifier = Modifier.align(Alignment.End).clientRegion("settings"),
+    ) {
+        Icon(Icons.Default.Settings, contentDescription = "Settings")
+    }
+}
+```
+
+The `key` parameter must be unique within the same window's title bar. When the composable is removed from the composition, its region is automatically unregistered.
+
+!!! note "`decorated-window-jbr` only"
+    The `clientRegion` modifier is provided by `decorated-window-jbr`. The `decorated-window-jni` module handles hit testing differently (via native platform APIs) and does not need this modifier — interactive elements in the title bar work automatically.
 
 ## Styling
 
@@ -315,9 +456,64 @@ TitleBar(
 
 When `gradientStartColor` is `Color.Unspecified` (the default), the background is a solid color.
 
-## macOS Fullscreen Controls
+## Custom Background
 
-On macOS, use the `newFullscreenControls()` modifier on `TitleBar` to enable the new-style fullscreen controls (traffic lights stay visible in fullscreen mode with a colored background):
+The `TitleBar` composable accepts a `backgroundContent` parameter: a composable rendered inside the title bar `Box`, between the base background fill and the user content. This lets you draw arbitrary shapes, gradients, or images that need full layout access — things that cannot be expressed as a plain `Color` or a simple horizontal gradient.
+
+```kotlin
+TitleBar(
+    backgroundContent = {
+        // Drawn on top of the background fill, behind all title bar content.
+        // The Box is sized to the full title bar area.
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawRect(color = Color(0xFF6200EE), size = Size(size.width / 2, size.height))
+        }
+    },
+) { state ->
+    Text(title, modifier = Modifier.align(Alignment.CenterHorizontally))
+}
+```
+
+A typical use case is a **diagonal color band** on the leading edge, covering the native window controls area:
+
+```kotlin
+TitleBar(
+    backgroundContent = {
+        val brandColor = Color(0xFFD32F2F)
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val slantWidth = size.height * 4f
+            drawPath(
+                path = Path().apply {
+                    moveTo(0f, 0f)
+                    lineTo(slantWidth, 0f)
+                    lineTo(slantWidth - size.height, size.height)
+                    lineTo(0f, size.height)
+                    close()
+                },
+                color = brandColor,
+            )
+        }
+    },
+) { _ -> /* content */ }
+```
+
+This draws a solid trapezoid from the left edge with a 45° diagonal cut. Adjust `size.height * N` to control the width.
+
+!!! note "Interaction layer ordering"
+    On platforms that use a native `Spacer` for drag handling (Windows fallback, Linux), `backgroundContent` is composed **before** the drag `Spacer`, so pointer events pass through to the drag handler correctly.
+
+## Fullscreen Title Bar
+
+### `newFullscreenControls()` — Sliding Overlay Title Bar
+
+The `newFullscreenControls()` modifier enables a **native-style sliding title bar** in fullscreen mode. When the window enters fullscreen, the title bar is hidden and rendered as a **floating overlay** that slides down when the user moves the pointer near the top edge of the screen, and slides back up when the pointer moves away.
+
+The behavior matches each platform's native fullscreen conventions: **Safari-like** on macOS, **Edge-like** on Windows, and **Firefox-like** on Linux.
+
+This works on **all three platforms** (macOS, Windows, Linux).
+
+!!! note "Windows fullscreen fix"
+    Compose for Desktop does not handle fullscreen correctly on Windows — the window does not cover the taskbar and does not behave like a true fullscreen window. With `newFullscreenControls()` and `decorated-window-jni`, fullscreen is implemented via native Win32 APIs, producing a true fullscreen window that covers the taskbar, exactly like Edge or other native Windows applications.
 
 ```kotlin
 TitleBar(modifier = Modifier.newFullscreenControls()) { state ->
@@ -325,9 +521,49 @@ TitleBar(modifier = Modifier.newFullscreenControls()) { state ->
 }
 ```
 
-With `decorated-window-jbr`, this sets the `apple.awt.newFullScreenControls` system property and uses `fullscreenControlButtonsBackground` from your `TitleBarStyle`.
+#### Behavior
 
-With `decorated-window-jni`, fullscreen button management is handled natively — the modifier is a no-op but safe to call.
+- In windowed mode, the title bar behaves normally
+- When the window enters fullscreen:
+    - The title bar is removed from the window layout and repositioned as a **top-edge overlay**
+    - Moving the pointer to the top edge of the screen triggers a **200ms slide-down animation**
+    - Moving the pointer away triggers a **200ms slide-up animation** (hidden)
+    - The title bar content, window controls, and drag behavior are preserved in the overlay
+
+#### Platform details
+
+| Platform | Fullscreen trigger | Overlay behavior |
+|----------|--------------------|------------------|
+| **macOS** | Native macOS fullscreen (green traffic light) | Safari-like: synced with the system menu bar; traffic light buttons animate in/out together with the title bar. Uses a native `NSEvent` monitor for menu bar visibility detection. |
+| **Windows** | Native Win32 fullscreen | Edge-like: title bar overlay with Compose-drawn window controls (minimize, maximize, close). Supports both native JNI drag and Compose fallback. |
+| **Linux** | Native WM fullscreen | Firefox-like: title bar overlay with GNOME Adwaita or KDE Breeze window controls. Uses `_NET_WM_MOVERESIZE` or Compose fallback for drag. |
+
+With `decorated-window-jbr`, this modifier sets the `apple.awt.newFullScreenControls` system property on macOS and uses `fullscreenControlButtonsBackground` from your `TitleBarStyle`. The sliding overlay behavior is only available with `decorated-window-jni`.
+
+With `decorated-window-jni`, the full sliding overlay is available on all platforms.
+
+### `macOSLargeCornerRadius()` — Large Corner Radius
+
+On macOS, use the `macOSLargeCornerRadius()` modifier on `TitleBar` to enable the 26pt window corner radius — the same radius used by Apple apps with a toolbar (Finder, Safari, etc.). Without this modifier, the window uses the standard ~10pt radius.
+
+```kotlin
+TitleBar(
+    modifier = Modifier
+        .newFullscreenControls()
+        .macOSLargeCornerRadius()
+) { state ->
+    // ...
+}
+```
+
+When enabled, an invisible `NSToolbar` is attached to the window, which triggers AppKit's larger corner radius. The traffic light buttons are automatically repositioned to match Apple's native inset (+6pt horizontally and vertically), consistent with Finder and Safari.
+
+The toolbar is transparently managed around fullscreen transitions — removed before entering fullscreen to avoid visual glitches, and reinstalled after the animation completes.
+
+!!! warning "Requires a JDK compiled with Xcode 26"
+    This modifier relies on the JNI native library to install the `NSToolbar`. If the native library cannot be loaded (i.e. the JDK was not compiled with Xcode 26 or later), `macOSLargeCornerRadius()` has **no effect**: the window will keep the standard ~10pt corner radius, and the traffic light buttons will remain at their default (smaller) position.
+
+This modifier only has an effect with `decorated-window-jni` on macOS. It is safe to call on other platforms (no-op).
 
 ## ProGuard
 
@@ -374,6 +610,22 @@ Two options are available for RTL support on macOS:
 ### Linux
 
 RTL layout is handled entirely by Compose since the window is fully undecorated on Linux. Both modules support RTL with live hot-swapping.
+
+### Decoupling Content and Button Directions
+
+In many RTL applications, the title bar content should follow the RTL direction (text flows right-to-left) while the window control buttons stay on their platform-conventional side. Use the [`controlButtonsDirection`](#controlbuttonsdirection--independent-button-placement) parameter to achieve this:
+
+```kotlin
+// RTL app where buttons stay on the right (Windows/Linux convention)
+CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+    DecoratedWindow(onCloseRequest = ::exitApplication, title = "تطبيقي") {
+        TitleBar(controlButtonsDirection = ControlButtonsDirection.Ltr) { state ->
+            Text(title, modifier = Modifier.align(Alignment.CenterHorizontally))
+        }
+        // app content
+    }
+}
+```
 
 ## Linux Desktop Environment Detection
 

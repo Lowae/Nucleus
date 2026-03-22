@@ -76,6 +76,19 @@ abstract class NativeApplicationMacOSPlatformSettings : AbstractMacOSPlatformSet
 abstract class JvmMacOSPlatformSettings : AbstractMacOSPlatformSettings() {
     var dockName: String? = null
     var setDockNameSameAsPackageName: Boolean = true
+
+    /**
+     * Previously used to enable App Store signing for PKG builds.
+     *
+     * This property is now ignored — PKG is always treated as an App Store format.
+     * Store-specific signing (sandbox entitlements, "3rd Party Mac Developer" certificates,
+     * provisioning profiles, `productsign`) is applied automatically when the target format
+     * is [TargetFormat.Pkg].
+     */
+    @Deprecated(
+        "PKG is always built for the App Store. This property is ignored and will be removed in a future release.",
+        level = DeprecationLevel.WARNING,
+    )
     var appStore: Boolean = false
     val entitlementsFile: RegularFileProperty = objects.fileProperty()
     val runtimeEntitlementsFile: RegularFileProperty = objects.fileProperty()
@@ -84,6 +97,16 @@ abstract class JvmMacOSPlatformSettings : AbstractMacOSPlatformSettings() {
 
     val provisioningProfile: RegularFileProperty = objects.fileProperty()
     val runtimeProvisioningProfile: RegularFileProperty = objects.fileProperty()
+
+    /**
+     * Target macOS SDK version to set in the app launcher's Mach-O headers via vtool.
+     * This allows AppKit to enable features gated behind a specific SDK version
+     * (e.g. Liquid Glass requires SDK 26.0).
+     *
+     * Set to null to disable patching. Defaults to "26.0".
+     * Only effective on macOS; ignored on other platforms.
+     */
+    var macOsSdkVersion: String? = "26.0"
 
     internal val infoPlistSettings = InfoPlistSettings()
 
@@ -140,6 +163,7 @@ abstract class LinuxPlatformSettings : AbstractPlatformSettings() {
 }
 
 abstract class WindowsPlatformSettings : AbstractPlatformSettings() {
+    var packageName: String? = null
     var console: Boolean = false
     var dirChooser: Boolean = true
     var perUserInstall: Boolean = false

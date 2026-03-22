@@ -22,10 +22,17 @@ dependencies {
 //    implementation(project(":core-runtime"))
 //    implementation(project(":aot-runtime"))
 //    implementation(project(":updater-runtime"))
+//    implementation(project(":native-http"))
 //    implementation(project(":darkmode-detector"))
-//    implementation(project(":decorated-window-material"))
+//    implementation(project(":system-color"))
+//    implementation(project(":decorated-window-material3"))
 //    implementation(project(":decorated-window-jni"))
+//    implementation(project(":energy-manager"))
+//    implementation(project(":taskbar-progress"))
 //    implementation(project(":graalvm-runtime"))
+    implementation(libs.reorderable)
+    implementation("com.materialkolor:material-kolor:4.1.1")
+    implementation(libs.compose.material.icons.extended)
 }
 
 val releaseVersion =
@@ -79,8 +86,6 @@ nucleus.application {
 //    }
 
     nativeDistributions {
-        modules("jdk.accessibility", "java.net.http")
-
         targetFormats(*TargetFormat.entries.toTypedArray())
         appResourcesRootDir.set(project.layout.projectDirectory.dir("resources"))
 
@@ -93,7 +98,7 @@ nucleus.application {
 
         // --- Trusted CA certificates ---
         // Certificates are imported into the bundled JVM's cacerts keystore at build time.
-        trustedCertificates.from(files("resources/common/netfree-ca.crt"))
+//        trustedCertificates.from(files("resources/common/netfree-ca.crt"))
 
         // --- Native libs handling ---
         cleanupNativeLibs = true // Auto cleanup native libraries

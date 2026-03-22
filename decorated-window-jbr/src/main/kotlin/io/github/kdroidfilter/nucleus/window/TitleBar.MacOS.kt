@@ -8,13 +8,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.platform.InspectorInfo
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.debugInspectorInfo
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.jetbrains.JBR
 import io.github.kdroidfilter.nucleus.window.styling.LocalTitleBarStyle
 import io.github.kdroidfilter.nucleus.window.styling.TitleBarStyle
+import io.github.kdroidfilter.nucleus.window.utils.WindowMouseEventEffect
 import io.github.kdroidfilter.nucleus.window.utils.macos.MacUtil
 
 fun Modifier.newFullscreenControls(newControls: Boolean = true): Modifier =
@@ -60,6 +60,8 @@ internal fun DecoratedWindowScope.MacOSTitleBar(
     modifier: Modifier = Modifier,
     gradientStartColor: Color = Color.Unspecified,
     style: TitleBarStyle = LocalTitleBarStyle.current,
+    controlButtonsDirection: ControlButtonsDirection = ControlButtonsDirection.Auto,
+    backgroundContent: @Composable () -> Unit = {},
     content: @Composable TitleBarScope.(DecoratedWindowState) -> Unit = {},
 ) {
     val newFullscreenControls =
@@ -85,19 +87,23 @@ internal fun DecoratedWindowScope.MacOSTitleBar(
 
     val titleBar = remember { JBR.getWindowDecorations().createCustomTitleBar() }
 
-    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    WindowMouseEventEffect(titleBar)
+
+    val controlDir = controlButtonsDirection.resolve()
+    val controlIsRtl = controlDir == LayoutDirection.Rtl
 
     TitleBarImpl(
-        modifier = modifier.customTitleBarMouseEventHandler(titleBar),
+        modifier = modifier,
         gradientStartColor = gradientStartColor,
         style = style,
+        controlButtonsDirection = controlDir,
         applyTitleBar = { height, titleBarState ->
-            titleBar.putProperty("controls.rtl", isRtl)
+            titleBar.putProperty("controls.rtl", controlIsRtl)
             titleBar.height = height.value
             JBR.getWindowDecorations().setCustomTitleBar(window, titleBar)
 
             if (titleBarState.isFullscreen && newFullscreenControls) {
-                if (isRtl) {
+                if (controlIsRtl) {
                     PaddingValues(end = 80.dp)
                 } else {
                     PaddingValues(start = 80.dp)
@@ -111,6 +117,7 @@ internal fun DecoratedWindowScope.MacOSTitleBar(
                 MacUtil.updateFullScreenButtons(window)
             }
         },
+        backgroundContent = backgroundContent,
         content = content,
     )
 }

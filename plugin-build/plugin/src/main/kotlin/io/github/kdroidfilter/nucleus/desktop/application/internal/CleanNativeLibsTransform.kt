@@ -21,6 +21,9 @@ import org.gradle.api.attributes.Attribute
 import org.gradle.api.file.FileSystemLocation
 import org.gradle.api.provider.Property
 import org.gradle.api.provider.Provider
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.work.DisableCachingByDefault
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.FileOutputStream
@@ -28,6 +31,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
+@DisableCachingByDefault(because = "Stripping native libs from JARs is fast and not worth caching")
 internal abstract class CleanNativeLibsTransform : TransformAction<CleanNativeLibsTransform.Parameters> {
     interface Parameters : TransformParameters {
         @get:org.gradle.api.tasks.Input
@@ -38,6 +42,7 @@ internal abstract class CleanNativeLibsTransform : TransformAction<CleanNativeLi
     }
 
     @get:InputArtifact
+    @get:PathSensitive(PathSensitivity.NAME_ONLY)
     abstract val inputArtifact: Provider<FileSystemLocation>
 
     override fun transform(outputs: TransformOutputs) {
@@ -203,7 +208,13 @@ internal fun registerCleanNativeLibsTransform(project: Project) {
     project.configurations.configureEach { configuration ->
         val name = configuration.name
         if (name.endsWith("RuntimeClasspath", ignoreCase = true) && !name.contains("Test", ignoreCase = true)) {
-            configuration.attributes.attribute(NATIVE_LIBS_CLEANED, true)
+            // Skip Android configurations to avoid breaking Android builds.
+            // Android's dexing transforms produce directories, not JARs, so applying
+            // our JAR-based transform to Android configurations causes failures.
+            val isAndroid = configuration.attributes.keySet().any { it.name.startsWith("com.android") }
+            if (!isAndroid) {
+                configuration.attributes.attribute(NATIVE_LIBS_CLEANED, true)
+            }
         }
     }
 
