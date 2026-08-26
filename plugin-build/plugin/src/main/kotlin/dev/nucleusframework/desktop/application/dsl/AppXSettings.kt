@@ -3,7 +3,7 @@
  * Use of this source code is governed by the Apache 2.0 license that can be found in the LICENSE.txt file.
  */
 
-package dev.nucleusframework.desktop.application.dsl
+package io.github.kdroidfilter.nucleus.desktop.application.dsl
 
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.model.ObjectFactory
@@ -35,19 +35,6 @@ abstract class AppXSettings {
     /** Add auto-launch on startup capability. Default: false */
     var addAutoLaunchExtension: Boolean = false
 
-    /**
-     * StartupTask TaskId used by the auto-launch extension. Exposed at runtime via
-     * `NucleusApp.startupTaskId` so `AutoLaunch` can address the correct task.
-     *
-     * Default when [addAutoLaunchExtension] is `true`: `"SlackStartup"` — this is the
-     * value electron-builder hardcodes in the generated manifest (legacy leftover from
-     * its Slack origins). **Overriding this property alone does NOT change the manifest** —
-     * it only changes the TaskId the runtime looks up, which would cause MSIX
-     * `StartupTask.GetAsync` to fail. Only override if you are also post-processing
-     * the generated `AppxManifest.xml` to match.
-     */
-    var startupTaskId: String? = null
-
     /** Background color of the app tile (e.g. "#464646"). Default: null */
     var backgroundColor: String? = null
 
@@ -66,15 +53,30 @@ abstract class AppXSettings {
     /** AppX capabilities (e.g. "runFullTrust"). Default: null */
     var capabilities: List<String>? = null
 
-    /** Store tile logo (mapped as `StoreLogo.png`) */
+    /**
+     * Store tile logo (mapped as `StoreLogo.png`).
+     * Qualified siblings like `StoreLogo.scale-200.png` are copied automatically.
+     */
     val storeLogo: RegularFileProperty = objects.fileProperty()
 
-    /** Small tile logo (mapped as `Square44x44Logo.png`) */
+    /**
+     * Small tile logo (mapped as `Square44x44Logo.png`).
+     * Qualified siblings like `Square44x44Logo.scale-200.png`,
+     * `Square44x44Logo.targetsize-32.png`, and
+     * `Square44x44Logo.targetsize-32_altform-unplated.png`
+     * are copied automatically.
+     */
     val square44x44Logo: RegularFileProperty = objects.fileProperty()
 
-    /** Medium tile logo (mapped as `Square150x150Logo.png`) */
+    /**
+     * Medium tile logo (mapped as `Square150x150Logo.png`).
+     * Qualified siblings like `Square150x150Logo.scale-200.png` are copied automatically.
+     */
     val square150x150Logo: RegularFileProperty = objects.fileProperty()
 
-    /** Wide tile logo (mapped as `Wide310x150Logo.png`) */
+    /**
+     * Wide tile logo (mapped as `Wide310x150Logo.png`).
+     * Qualified siblings like `Wide310x150Logo.scale-200.png` are copied automatically.
+     */
     val wide310x150Logo: RegularFileProperty = objects.fileProperty()
 }
